@@ -813,15 +813,17 @@ class AudioWriter:
 
     def build_output_paths(self, voice, parts_count, output_format):
         output_format = self.resolve_output_format(output_format)
+        date_dir = os.path.join(self.output_dir, datetime.now().strftime('%Y-%m-%d'))
+        os.makedirs(date_dir, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         safe_voice = self._sanitize_voice_id(voice)
         suffix = uuid.uuid4().hex[:8]
         if parts_count <= 0:
             return []
         if parts_count == 1:
-            return [os.path.join(self.output_dir, f"{timestamp}_{safe_voice}_{suffix}.{output_format}")]
+            return [os.path.join(date_dir, f"{timestamp}_{safe_voice}_{suffix}.{output_format}")]
         return [
-            os.path.join(self.output_dir, f"{timestamp}_{safe_voice}_{suffix}_part{index:02d}.{output_format}")
+            os.path.join(date_dir, f"{timestamp}_{safe_voice}_{suffix}_part{index:02d}.{output_format}")
             for index in range(1, parts_count + 1)
         ]
 
