@@ -2,7 +2,7 @@
 chcp 65001 >nul
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "PROJECT_DIR=%~dp0Kokoro-TTS"
+set "PROJECT_DIR=%~dp0"
 cd /d "%PROJECT_DIR%"
 
 if not exist ".venv\Scripts\python.exe" (
