@@ -74,6 +74,7 @@ Environment variables (all optional):
 - `FFMPEG_BINARY`/`FFPROBE_BINARY`: explicit ffmpeg paths if not on PATH.
 - `LOG_LEVEL`/`FILE_LOG_LEVEL` and `LOG_DIR`: logging controls and log location.
 - `DEFAULT_CONCURRENCY_LIMIT`: Gradio queue limit (0 disables).
+- `LOG_EVERY_N_SEGMENTS`: log every N streamed segments (default `10`; set `1` for full detail).
 - `SPACE_ID`: used to determine streaming character limits on Spaces.
 - `UI_PRIMARY_HUE`: primary theme hue in the UI.
 - `HF_TOKEN`: optional token for higher Hugging Face Hub rate limits.
