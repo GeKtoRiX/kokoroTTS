@@ -10,7 +10,7 @@ import os
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from ..domain.expressions import extract_english_expressions
 from ..domain.morphology import analyze_english_text
@@ -100,6 +100,141 @@ class MorphologyRepository:
                 "Morphology DB enabled but MORPH_DB_PATH is empty; disabling DB writes."
             )
             self.enabled = False
+
+    def ensure_schema(self) -> None:
+        """Create morphology tables and indexes when missing."""
+        if not self.enabled:
+            raise RuntimeError("Morphology DB is disabled.")
+        if not self.db_path:
+            raise RuntimeError("Morphology DB path is empty.")
+
+        self._ensure_parent_dir()
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                connection.execute(self._sql_create_lexemes_table())
+                connection.execute(self._sql_create_occurrences_table())
+                connection.execute(self._sql_create_expressions_table())
+                for statement in self._sql_create_occurrence_indexes():
+                    connection.execute(statement)
+                self._schema_ready = True
+        finally:
+            connection.close()
+
+    def list_rows(
+        self,
+        *,
+        dataset: str = "occurrences",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[str], list[list[str]]]:
+        if not self.enabled:
+            raise RuntimeError("Morphology DB is disabled.")
+        table_key, table_name = self._resolve_crud_table(dataset)
+        _ = table_key
+        self.ensure_schema()
+        safe_limit = max(1, min(int(limit), 1000))
+        safe_offset = max(0, int(offset))
+
+        connection = sqlite3.connect(self.db_path)
+        try:
+            headers = self._table_headers(connection, table_name)
+            if not headers:
+                return [], []
+            order_clause = '"id" DESC' if "id" in headers else "ROWID DESC"
+            query = (
+                f'SELECT * FROM "{table_name}" '
+                f"ORDER BY {order_clause} LIMIT ? OFFSET ?"
+            )
+            cursor = connection.execute(query, (safe_limit, safe_offset))
+            rows = [[_stringify_cell(item) for item in row] for row in cursor.fetchall()]
+            return headers, rows
+        finally:
+            connection.close()
+
+    def insert_row(
+        self,
+        *,
+        dataset: str,
+        payload: dict[str, Any],
+    ) -> str:
+        if not self.enabled:
+            raise RuntimeError("Morphology DB is disabled.")
+        if not isinstance(payload, dict):
+            raise ValueError("Payload must be a JSON object.")
+
+        table_key, table_name = self._resolve_crud_table(dataset)
+        row = self._normalize_insert_payload(table_key, payload)
+        columns = list(row.keys())
+        values = [row[column] for column in columns]
+        quoted_columns = ", ".join(f'"{column}"' for column in columns)
+        placeholders = ", ".join("?" for _ in columns)
+        sql = f'INSERT INTO "{table_name}" ({quoted_columns}) VALUES ({placeholders})'
+
+        self.ensure_schema()
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                cursor = connection.execute(sql, values)
+                if table_key == "lexemes":
+                    return str(row["dedup_key"])
+                return str(cursor.lastrowid)
+        finally:
+            connection.close()
+
+    def update_row(
+        self,
+        *,
+        dataset: str,
+        row_id: str,
+        payload: dict[str, Any],
+    ) -> int:
+        if not self.enabled:
+            raise RuntimeError("Morphology DB is disabled.")
+        if not isinstance(payload, dict):
+            raise ValueError("Payload must be a JSON object.")
+
+        table_key, table_name = self._resolve_crud_table(dataset)
+        primary_column = "dedup_key" if table_key == "lexemes" else "id"
+        update_payload = self._normalize_update_payload(table_key, payload)
+        if not update_payload:
+            raise ValueError("No editable fields in payload.")
+        row_id_value = self._normalize_row_identifier(table_key, row_id)
+
+        assignments = ", ".join(f'"{column}" = ?' for column in update_payload.keys())
+        values = list(update_payload.values()) + [row_id_value]
+        sql = f'UPDATE "{table_name}" SET {assignments} WHERE "{primary_column}" = ?'
+
+        self.ensure_schema()
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                cursor = connection.execute(sql, values)
+                return int(cursor.rowcount or 0)
+        finally:
+            connection.close()
+
+    def delete_row(
+        self,
+        *,
+        dataset: str,
+        row_id: str,
+    ) -> int:
+        if not self.enabled:
+            raise RuntimeError("Morphology DB is disabled.")
+        table_key, table_name = self._resolve_crud_table(dataset)
+        primary_column = "dedup_key" if table_key == "lexemes" else "id"
+        row_id_value = self._normalize_row_identifier(table_key, row_id)
+        sql = f'DELETE FROM "{table_name}" WHERE "{primary_column}" = ?'
+
+        self.ensure_schema()
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                cursor = connection.execute(sql, (row_id_value,))
+                return int(cursor.rowcount or 0)
+        finally:
+            connection.close()
 
     def ingest_dialogue_parts(
         self,
@@ -374,6 +509,172 @@ class MorphologyRepository:
                         )
         return token_rows, expression_rows
 
+    def _resolve_crud_table(self, dataset: str) -> tuple[str, str]:
+        normalized = (dataset or "").strip().lower()
+        if normalized in ("lexemes", "lexeme"):
+            return "lexemes", self.lexemes_table
+        if normalized in ("occurrences", "token_occurrences", "occurrence"):
+            return "occurrences", self.occurrences_table
+        if normalized in ("expressions", "expression", "mwe", "mwes", "idioms"):
+            return "expressions", self.expressions_table
+        raise ValueError("Unsupported dataset. Use lexemes, occurrences, or expressions.")
+
+    def _table_headers(self, connection: sqlite3.Connection, table_name: str) -> list[str]:
+        cursor = connection.execute(f'PRAGMA table_info("{table_name}")')
+        return [str(row[1]) for row in cursor.fetchall() if len(row) > 1]
+
+    def _normalize_row_identifier(self, table_key: str, row_id: str) -> Any:
+        raw = str(row_id or "").strip()
+        if table_key == "lexemes":
+            if not raw:
+                raise ValueError("row_id is required (dedup_key for lexemes).")
+            return raw
+        if not raw:
+            raise ValueError("row_id is required (numeric id).")
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise ValueError("row_id must be an integer for this dataset.") from exc
+
+    def _normalize_insert_payload(self, table_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if table_key == "lexemes":
+            lemma = str(payload.get("lemma", "")).strip()
+            upos = str(payload.get("upos", "X")).strip().upper() or "X"
+            dedup_key = str(payload.get("dedup_key", "")).strip() or _build_key(lemma, upos)
+            if not dedup_key:
+                raise ValueError("dedup_key or (lemma + upos) is required.")
+            return {
+                "dedup_key": dedup_key,
+                "lemma": lemma,
+                "upos": upos,
+                "feats_json": _normalize_json_text(payload.get("feats_json", "{}")),
+            }
+
+        if table_key == "occurrences":
+            token_text = str(payload.get("token_text", payload.get("token", ""))).strip()
+            lemma = str(payload.get("lemma", token_text)).strip() or token_text
+            upos = str(payload.get("upos", "X")).strip().upper() or "X"
+            dedup_key = str(payload.get("dedup_key", "")).strip() or _build_key(lemma, upos)
+            text_sha1 = str(payload.get("text_sha1", "")).strip() or _sha1_text(token_text)
+            return {
+                "source": str(payload.get("source", "manual")).strip() or "manual",
+                "part_index": _to_int(payload.get("part_index"), 0),
+                "segment_index": _to_int(payload.get("segment_index"), 0),
+                "token_index": _to_int(payload.get("token_index"), 0),
+                "voice": str(payload.get("voice", "")).strip(),
+                "token_text": token_text,
+                "lemma": lemma,
+                "upos": upos,
+                "feats_json": _normalize_json_text(payload.get("feats_json", "{}")),
+                "start_offset": _to_int(payload.get("start_offset"), 0),
+                "end_offset": _to_int(payload.get("end_offset"), 0),
+                "dedup_key": dedup_key,
+                "text_sha1": text_sha1,
+            }
+
+        expression_text = str(payload.get("expression_text", "")).strip()
+        expression_lemma = (
+            str(payload.get("expression_lemma", expression_text)).strip() or expression_text
+        )
+        expression_type = str(payload.get("expression_type", "expression")).strip() or "expression"
+        expression_key = str(payload.get("expression_key", "")).strip() or (
+            f"{expression_lemma.lower()}|{expression_type.lower()}"
+        )
+        text_sha1 = str(payload.get("text_sha1", "")).strip() or _sha1_text(expression_text)
+        return {
+            "source": str(payload.get("source", "manual")).strip() or "manual",
+            "part_index": _to_int(payload.get("part_index"), 0),
+            "segment_index": _to_int(payload.get("segment_index"), 0),
+            "expression_index": _to_int(payload.get("expression_index"), 0),
+            "voice": str(payload.get("voice", "")).strip(),
+            "expression_text": expression_text,
+            "expression_lemma": expression_lemma,
+            "expression_type": expression_type,
+            "start_offset": _to_int(payload.get("start_offset"), 0),
+            "end_offset": _to_int(payload.get("end_offset"), 0),
+            "expression_key": expression_key,
+            "match_source": str(payload.get("match_source", "manual")).strip() or "manual",
+            "wordnet_hit": 1 if bool(payload.get("wordnet_hit")) else 0,
+            "text_sha1": text_sha1,
+        }
+
+    def _normalize_update_payload(self, table_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if table_key == "lexemes":
+            result: dict[str, Any] = {}
+            if "lemma" in payload:
+                result["lemma"] = str(payload.get("lemma", "")).strip()
+            if "upos" in payload:
+                result["upos"] = str(payload.get("upos", "X")).strip().upper() or "X"
+            if "feats_json" in payload:
+                result["feats_json"] = _normalize_json_text(payload.get("feats_json", "{}"))
+            return result
+
+        if table_key == "occurrences":
+            result = {}
+            if "source" in payload:
+                result["source"] = str(payload.get("source", "manual")).strip() or "manual"
+            if "part_index" in payload:
+                result["part_index"] = _to_int(payload.get("part_index"), 0)
+            if "segment_index" in payload:
+                result["segment_index"] = _to_int(payload.get("segment_index"), 0)
+            if "token_index" in payload:
+                result["token_index"] = _to_int(payload.get("token_index"), 0)
+            if "voice" in payload:
+                result["voice"] = str(payload.get("voice", "")).strip()
+            if "token_text" in payload or "token" in payload:
+                token_text = str(
+                    payload.get("token_text", payload.get("token", ""))
+                ).strip()
+                result["token_text"] = token_text
+            if "lemma" in payload:
+                result["lemma"] = str(payload.get("lemma", "")).strip()
+            if "upos" in payload:
+                result["upos"] = str(payload.get("upos", "X")).strip().upper() or "X"
+            if "feats_json" in payload:
+                result["feats_json"] = _normalize_json_text(payload.get("feats_json", "{}"))
+            if "start_offset" in payload:
+                result["start_offset"] = _to_int(payload.get("start_offset"), 0)
+            if "end_offset" in payload:
+                result["end_offset"] = _to_int(payload.get("end_offset"), 0)
+            if "dedup_key" in payload:
+                result["dedup_key"] = str(payload.get("dedup_key", "")).strip()
+            if "text_sha1" in payload:
+                result["text_sha1"] = str(payload.get("text_sha1", "")).strip()
+            return result
+
+        result = {}
+        if "source" in payload:
+            result["source"] = str(payload.get("source", "manual")).strip() or "manual"
+        if "part_index" in payload:
+            result["part_index"] = _to_int(payload.get("part_index"), 0)
+        if "segment_index" in payload:
+            result["segment_index"] = _to_int(payload.get("segment_index"), 0)
+        if "expression_index" in payload:
+            result["expression_index"] = _to_int(payload.get("expression_index"), 0)
+        if "voice" in payload:
+            result["voice"] = str(payload.get("voice", "")).strip()
+        if "expression_text" in payload:
+            result["expression_text"] = str(payload.get("expression_text", "")).strip()
+        if "expression_lemma" in payload:
+            result["expression_lemma"] = str(payload.get("expression_lemma", "")).strip()
+        if "expression_type" in payload:
+            result["expression_type"] = (
+                str(payload.get("expression_type", "expression")).strip() or "expression"
+            )
+        if "start_offset" in payload:
+            result["start_offset"] = _to_int(payload.get("start_offset"), 0)
+        if "end_offset" in payload:
+            result["end_offset"] = _to_int(payload.get("end_offset"), 0)
+        if "expression_key" in payload:
+            result["expression_key"] = str(payload.get("expression_key", "")).strip()
+        if "match_source" in payload:
+            result["match_source"] = str(payload.get("match_source", "manual")).strip() or "manual"
+        if "wordnet_hit" in payload:
+            result["wordnet_hit"] = 1 if bool(payload.get("wordnet_hit")) else 0
+        if "text_sha1" in payload:
+            result["text_sha1"] = str(payload.get("text_sha1", "")).strip()
+        return result
+
     def _ensure_parent_dir(self) -> None:
         parent = os.path.dirname(os.path.abspath(self.db_path))
         if parent:
@@ -539,6 +840,28 @@ def _to_int(value: object, default: int) -> int:
 
 def _build_key(lemma: str, upos: str) -> str:
     return f"{lemma.strip().lower()}|{upos.strip().lower()}"
+
+
+def _sha1_text(value: str) -> str:
+    text = str(value or "")
+    return hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def _normalize_json_text(value: object) -> str:
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if value is None:
+        return "{}"
+    raw = str(value).strip()
+    if not raw:
+        return "{}"
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Invalid JSON in feats_json.") from exc
+    if not isinstance(parsed, (dict, list)):
+        raise ValueError("feats_json must be a JSON object or array.")
+    return json.dumps(parsed, ensure_ascii=False, sort_keys=True)
 
 
 def _stringify_cell(value: object) -> str:

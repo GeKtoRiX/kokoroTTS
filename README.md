@@ -9,6 +9,8 @@ Local Gradio app for `hexgrad/Kokoro-82M` with:
 - text normalization (time/number)
 - style presets (`neutral`, `narrator`, `energetic`)
 - output formats `wav/mp3/ogg` (ffmpeg fallback handling)
+- lesson text builder via LM Studio OpenAI-compatible API
+- morphology SQLite CRUD tab (view/add/edit/delete)
 
 ## Known issues
 
@@ -72,6 +74,8 @@ Create/edit `.env` (or start from `.env.example`):
 - `MORPH_DB_ENABLED`, `MORPH_DB_PATH`, `MORPH_DB_TABLE_PREFIX`
 - `PRONUNCIATION_RULES_PATH` (default `data/pronunciation_rules.json`)
 - `WORDNET_DATA_DIR`, `WORDNET_AUTO_DOWNLOAD`, `SPACY_EN_MODEL_AUTO_DOWNLOAD`
+- `LM_STUDIO_BASE_URL`, `LM_STUDIO_API_KEY`, `LM_STUDIO_MODEL`
+- `LM_STUDIO_TIMEOUT_SECONDS`, `LM_STUDIO_TEMPERATURE`, `LM_STUDIO_MAX_TOKENS`
 
 When `MORPH_DB_ENABLED=1`, each `generate` run writes English token analysis into SQLite:
 - `<prefix>lexemes` (deduplicated by key, insert-ignore only)
@@ -85,10 +89,38 @@ Generated files are grouped by date inside `OUTPUT_DIR`:
 UI includes a `Morphology DB Export` accordion with `Download ODS` for `lexemes`, `token_occurrences`, `expressions`, or `POS table` (LibreOffice Calc native format).
 `POS table` export uses columns by parts of speech (Noun, Verb, Adjective, etc.) and rows with words.
 
+UI also includes a `Morphology DB` tab with basic CRUD operations for `morphology.sqlite3`:
+- browse rows by dataset (`lexemes`, `occurrences`, `expressions`)
+- add row from JSON
+- update row by `id` (or `dedup_key` for `lexemes`)
+- delete row by `id` (or `dedup_key` for `lexemes`)
+
+CRUD JSON examples:
+
+```json
+{"source":"manual","token_text":"Cats","lemma":"cat","upos":"NOUN"}
+```
+
+Add row example for `occurrences`.
+
+```json
+{"token_text":"Dogs","lemma":"dog"}
+```
+
+Update row example for `occurrences` with `row id = 15`.
+
+Delete example: set `row id = 15` and click `Delete row`.
+For `lexemes`, use `dedup_key` as row id, for example: `run|verb`.
+
 UI also includes a `Pronunciation dictionary` accordion:
 - load/apply persistent JSON rules without restart
 - import rules from `.json`
 - export current rules to `OUTPUT_DIR/YYYY-MM-DD/vocabulary`
+
+UI also includes a `Lesson Builder (LLM)` tab:
+- sends raw text to LM Studio over OpenAI-compatible Chat Completions API
+- rewrites it into an English lesson script with detailed exercise explanations
+- allows inserting generated lesson text back into the main TTS input
 
 Expression detection uses:
 - spaCy `DependencyMatcher` for verb + particle phrasal verbs (lemma-based)

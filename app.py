@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import platform
 import sys
@@ -65,6 +66,11 @@ from kokoro_tts.domain.voice import (
     summarize_voice,
 )
 from kokoro_tts.integrations.ffmpeg import configure_ffmpeg
+from kokoro_tts.integrations.lm_studio import (
+    LmStudioError,
+    LessonRequest,
+    generate_lesson_text,
+)
 from kokoro_tts.integrations.model_manager import ModelManager
 from kokoro_tts.integrations.spaces_gpu import build_forward_gpu
 from kokoro_tts.logging_config import setup_logging
@@ -106,7 +112,9 @@ logger.debug(
     "Log config: LOG_LEVEL=%s FILE_LOG_LEVEL=%s LOG_DIR=%s OUTPUT_DIR=%s REPO_ID=%s "
     "MAX_CHUNK_CHARS=%s HISTORY_LIMIT=%s NORMALIZE_TIMES=%s NORMALIZE_NUMBERS=%s "
     "DEFAULT_OUTPUT_FORMAT=%s DEFAULT_CONCURRENCY_LIMIT=%s LOG_EVERY_N_SEGMENTS=%s "
-    "MORPH_DB_ENABLED=%s MORPH_DB_PATH=%s MORPH_DB_TABLE_PREFIX=%s",
+    "MORPH_DB_ENABLED=%s MORPH_DB_PATH=%s MORPH_DB_TABLE_PREFIX=%s "
+    "LM_STUDIO_BASE_URL=%s LM_STUDIO_MODEL=%s LM_STUDIO_TIMEOUT_SECONDS=%s "
+    "LM_STUDIO_TEMPERATURE=%s LM_STUDIO_MAX_TOKENS=%s",
     CONFIG.log_level,
     CONFIG.file_log_level,
     CONFIG.log_dir,
@@ -122,6 +130,11 @@ logger.debug(
     CONFIG.morph_db_enabled,
     CONFIG.morph_db_path,
     CONFIG.morph_db_table_prefix,
+    CONFIG.lm_studio_base_url,
+    CONFIG.lm_studio_model,
+    CONFIG.lm_studio_timeout_seconds,
+    CONFIG.lm_studio_temperature,
+    CONFIG.lm_studio_max_tokens,
 )
 
 CUDA_AVAILABLE = torch.cuda.is_available()
@@ -403,6 +416,172 @@ def export_morphology_sheet(dataset: str = "lexemes"):
     return sheet_path, f"Export ready: {os.path.basename(sheet_path)}"
 
 
+def _empty_morphology_table_update():
+    return gr.update(value=[[]], headers=["No data"])
+
+
+def _parse_row_payload(raw_json):
+    raw_text = str(raw_json or "").strip()
+    if not raw_text:
+        raise ValueError("Row JSON is empty.")
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Row JSON must be an object.")
+    return payload
+
+
+def morphology_db_view(dataset="occurrences", limit=100, offset=0):
+    if MORPHOLOGY_REPOSITORY is None:
+        return _empty_morphology_table_update(), "Morphology DB is not configured."
+    try:
+        headers, rows = MORPHOLOGY_REPOSITORY.list_rows(
+            dataset=str(dataset or "occurrences"),
+            limit=_coerce_int(limit, 100, 1, 1000),
+            offset=_coerce_int(offset, 0, 0, 1_000_000),
+        )
+    except Exception as exc:
+        logger.exception("Morphology DB view failed")
+        return _empty_morphology_table_update(), f"View failed: {exc}"
+    if not headers:
+        return _empty_morphology_table_update(), "No table metadata available."
+    if not rows:
+        return gr.update(value=[], headers=headers), "No rows found."
+    return gr.update(value=rows, headers=headers), f"Loaded {len(rows)} row(s)."
+
+
+def morphology_db_add(dataset, row_json, limit=100, offset=0):
+    if MORPHOLOGY_REPOSITORY is None:
+        return _empty_morphology_table_update(), "Morphology DB is not configured."
+    try:
+        payload = _parse_row_payload(row_json)
+        inserted_id = MORPHOLOGY_REPOSITORY.insert_row(
+            dataset=str(dataset or "occurrences"),
+            payload=payload,
+        )
+        table_update, view_status = morphology_db_view(dataset, limit, offset)
+        return table_update, f"Added row with id/key={inserted_id}. {view_status}"
+    except Exception as exc:
+        logger.exception("Morphology DB add failed")
+        return _empty_morphology_table_update(), f"Add failed: {exc}"
+
+
+def morphology_db_update(dataset, row_id, row_json, limit=100, offset=0):
+    if MORPHOLOGY_REPOSITORY is None:
+        return _empty_morphology_table_update(), "Morphology DB is not configured."
+    try:
+        payload = _parse_row_payload(row_json)
+        updated = MORPHOLOGY_REPOSITORY.update_row(
+            dataset=str(dataset or "occurrences"),
+            row_id=str(row_id or ""),
+            payload=payload,
+        )
+        table_update, view_status = morphology_db_view(dataset, limit, offset)
+        return table_update, f"Updated {updated} row(s). {view_status}"
+    except Exception as exc:
+        logger.exception("Morphology DB update failed")
+        return _empty_morphology_table_update(), f"Update failed: {exc}"
+
+
+def morphology_db_delete(dataset, row_id, limit=100, offset=0):
+    if MORPHOLOGY_REPOSITORY is None:
+        return _empty_morphology_table_update(), "Morphology DB is not configured."
+    try:
+        deleted = MORPHOLOGY_REPOSITORY.delete_row(
+            dataset=str(dataset or "occurrences"),
+            row_id=str(row_id or ""),
+        )
+        table_update, view_status = morphology_db_view(dataset, limit, offset)
+        return table_update, f"Deleted {deleted} row(s). {view_status}"
+    except Exception as exc:
+        logger.exception("Morphology DB delete failed")
+        return _empty_morphology_table_update(), f"Delete failed: {exc}"
+
+
+def _coerce_int(value, default: int, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        parsed = default
+    return max(min_value, min(max_value, parsed))
+
+
+def _coerce_float(value, default: float, min_value: float, max_value: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(min_value, min(max_value, parsed))
+
+
+def build_lesson_for_tts(
+    raw_text,
+    llm_base_url="",
+    llm_api_key="",
+    llm_model="",
+    llm_temperature=None,
+    llm_max_tokens=None,
+    llm_timeout_seconds=None,
+    llm_extra_instructions="",
+):
+    raw_text = (raw_text or "").strip()
+    if not raw_text:
+        return "", "Please provide raw text."
+
+    base_url = (llm_base_url or CONFIG.lm_studio_base_url).strip()
+    api_key = (llm_api_key or CONFIG.lm_studio_api_key).strip() or "lm-studio"
+    model = (llm_model or CONFIG.lm_studio_model).strip()
+    temperature = _coerce_float(
+        llm_temperature,
+        CONFIG.lm_studio_temperature,
+        0.0,
+        2.0,
+    )
+    max_tokens = _coerce_int(
+        llm_max_tokens,
+        CONFIG.lm_studio_max_tokens,
+        64,
+        32768,
+    )
+    timeout_seconds = _coerce_int(
+        llm_timeout_seconds,
+        CONFIG.lm_studio_timeout_seconds,
+        5,
+        600,
+    )
+    extra_instructions = (llm_extra_instructions or "").strip()
+
+    try:
+        lesson = generate_lesson_text(
+            LessonRequest(
+                raw_text=raw_text,
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                timeout_seconds=timeout_seconds,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                extra_instructions=extra_instructions,
+            )
+        )
+    except LmStudioError as exc:
+        logger.warning("LM Studio lesson generation failed: %s", exc)
+        return "", f"LM Studio error: {exc}"
+    except Exception:
+        logger.exception("Unexpected LM Studio lesson generation failure")
+        return "", "Unexpected LM Studio error. Check logs for details."
+
+    logger.info(
+        "LM Studio lesson generated: chars=%s model=%s base_url=%s",
+        len(lesson),
+        model,
+        base_url,
+    )
+    return lesson, "Lesson generated. Review text and copy to TTS input if needed."
+
+
 if not SKIP_APP_INIT:
     PRONUNCIATION_REPOSITORY = PronunciationRepository(
         PRONUNCIATION_RULES_PATH,
@@ -468,10 +647,15 @@ if not SKIP_APP_INIT:
         generate_all=generate_all,
         predict=predict,
         export_morphology_sheet=export_morphology_sheet,
+        morphology_db_view=morphology_db_view,
+        morphology_db_add=morphology_db_add,
+        morphology_db_update=morphology_db_update,
+        morphology_db_delete=morphology_db_delete,
         load_pronunciation_rules=load_pronunciation_rules_json,
         apply_pronunciation_rules=apply_pronunciation_rules_json,
         import_pronunciation_rules=import_pronunciation_rules_json,
         export_pronunciation_rules=export_pronunciation_rules_json,
+        build_lesson_for_tts=build_lesson_for_tts,
         history_service=HISTORY_SERVICE,
         choices=CHOICES,
     )

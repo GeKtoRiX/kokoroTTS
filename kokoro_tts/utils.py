@@ -29,3 +29,22 @@ def parse_int_env(
     if max_value is not None:
         value = min(max_value, value)
     return value
+
+
+def parse_float_env(
+    name: str,
+    default: float,
+    *,
+    min_value: Optional[float] = None,
+    max_value: Optional[float] = None,
+) -> float:
+    """Parse a float environment variable with optional bounds."""
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value

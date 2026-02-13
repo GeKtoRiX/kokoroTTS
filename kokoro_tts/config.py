@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .utils import parse_int_env, resolve_path
+from .utils import parse_float_env, parse_int_env, resolve_path
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,12 @@ class AppConfig:
     space_id: str
     is_duplicate: bool
     char_limit: Optional[int]
+    lm_studio_base_url: str = "http://127.0.0.1:1234/v1"
+    lm_studio_api_key: str = "lm-studio"
+    lm_studio_model: str = ""
+    lm_studio_timeout_seconds: int = 120
+    lm_studio_temperature: float = 0.3
+    lm_studio_max_tokens: int = 2048
 
 
 def load_config() -> AppConfig:
@@ -81,6 +87,29 @@ def load_config() -> AppConfig:
     space_id = os.getenv("SPACE_ID", "")
     is_duplicate = not space_id.startswith("hexgrad/")
     char_limit = None if is_duplicate else 5000
+    lm_studio_base_url = os.getenv(
+        "LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1"
+    ).strip()
+    lm_studio_api_key = os.getenv("LM_STUDIO_API_KEY", "lm-studio").strip() or "lm-studio"
+    lm_studio_model = os.getenv("LM_STUDIO_MODEL", "").strip()
+    lm_studio_timeout_seconds = parse_int_env(
+        "LM_STUDIO_TIMEOUT_SECONDS",
+        120,
+        min_value=5,
+        max_value=600,
+    )
+    lm_studio_temperature = parse_float_env(
+        "LM_STUDIO_TEMPERATURE",
+        0.3,
+        min_value=0.0,
+        max_value=2.0,
+    )
+    lm_studio_max_tokens = parse_int_env(
+        "LM_STUDIO_MAX_TOKENS",
+        2048,
+        min_value=64,
+        max_value=32768,
+    )
     return AppConfig(
         log_level=log_level,
         file_log_level=file_log_level,
@@ -102,4 +131,10 @@ def load_config() -> AppConfig:
         space_id=space_id,
         is_duplicate=is_duplicate,
         char_limit=char_limit,
+        lm_studio_base_url=lm_studio_base_url,
+        lm_studio_api_key=lm_studio_api_key,
+        lm_studio_model=lm_studio_model,
+        lm_studio_timeout_seconds=lm_studio_timeout_seconds,
+        lm_studio_temperature=lm_studio_temperature,
+        lm_studio_max_tokens=lm_studio_max_tokens,
     )

@@ -403,3 +403,55 @@ def test_morphology_repository_exports_expressions_ods(tmp_path: Path):
         content = archive.read("content.xml").decode("utf-8")
     assert "kick the bucket" in content
     assert "idiom" in content
+
+
+def test_morphology_repository_crud_operations(tmp_path: Path):
+    db_path = tmp_path / "crud.sqlite3"
+    repo = MorphologyRepository(
+        enabled=True,
+        db_path=str(db_path),
+        logger_instance=logging.getLogger("test"),
+        analyzer=lambda _: {"language": "en", "items": []},
+        expression_extractor=lambda _: [],
+    )
+
+    occurrence_id = repo.insert_row(
+        dataset="occurrences",
+        payload={
+            "source": "manual",
+            "token_text": "Cats",
+            "lemma": "cat",
+            "upos": "NOUN",
+        },
+    )
+    headers, rows = repo.list_rows(dataset="occurrences", limit=20, offset=0)
+    assert "id" in headers
+    assert rows
+    token_index = headers.index("token_text")
+    assert rows[0][token_index] == "Cats"
+
+    updated = repo.update_row(
+        dataset="occurrences",
+        row_id=occurrence_id,
+        payload={"token_text": "Dogs", "lemma": "dog"},
+    )
+    assert updated == 1
+    headers, rows = repo.list_rows(dataset="occurrences", limit=20, offset=0)
+    assert rows[0][headers.index("token_text")] == "Dogs"
+
+    deleted = repo.delete_row(dataset="occurrences", row_id=occurrence_id)
+    assert deleted == 1
+
+    lexeme_key = repo.insert_row(
+        dataset="lexemes",
+        payload={"lemma": "run", "upos": "VERB", "feats_json": "{}"},
+    )
+    assert lexeme_key == "run|verb"
+    lex_updated = repo.update_row(
+        dataset="lexemes",
+        row_id=lexeme_key,
+        payload={"lemma": "running"},
+    )
+    assert lex_updated == 1
+    lex_deleted = repo.delete_row(dataset="lexemes", row_id=lexeme_key)
+    assert lex_deleted == 1

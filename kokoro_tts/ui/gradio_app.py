@@ -47,10 +47,15 @@ def create_gradio_app(
     generate_all,
     predict,
     export_morphology_sheet=None,
+    morphology_db_view=None,
+    morphology_db_add=None,
+    morphology_db_update=None,
+    morphology_db_delete=None,
     load_pronunciation_rules=None,
     apply_pronunciation_rules=None,
     import_pronunciation_rules=None,
     export_pronunciation_rules=None,
+    build_lesson_for_tts=None,
     history_service,
     choices,
 ) -> tuple[gr.Blocks, bool]:
@@ -88,6 +93,30 @@ def create_gradio_app(
     pronunciation_import_btn = None
     pronunciation_export_btn = None
     pronunciation_export_file = None
+    llm_raw_text = None
+    llm_base_url = None
+    llm_api_key = None
+    llm_model = None
+    llm_temperature = None
+    llm_max_tokens = None
+    llm_timeout_seconds = None
+    llm_extra_instructions = None
+    llm_generate_btn = None
+    llm_to_tts_btn = None
+    llm_output_text = None
+    llm_status = None
+    morph_db_dataset = None
+    morph_db_limit = None
+    morph_db_offset = None
+    morph_db_refresh_btn = None
+    morph_db_table = None
+    morph_db_status = None
+    morph_db_add_json = None
+    morph_db_add_btn = None
+    morph_db_row_id = None
+    morph_db_update_json = None
+    morph_db_update_btn = None
+    morph_db_delete_btn = None
 
     stream_note = [
         "⚠️ There is an unknown Gradio bug that might yield no audio the first time you click `Stream`."
@@ -328,6 +357,174 @@ def create_gradio_app(
                         with gr.Accordion("Note", open=True):
                             gr.Markdown(stream_note)
                             gr.DuplicateButton()
+                    with gr.Tab("Lesson Builder (LLM)"):
+                        gr.Markdown(
+                            "Transform raw material into an English lesson script with detailed "
+                            "exercise explanations for TTS narration."
+                        )
+                        llm_raw_text = gr.Textbox(
+                            label="Raw source text",
+                            lines=12,
+                            placeholder=(
+                                "Paste lesson source text with tasks/exercises. "
+                                "The model will rewrite it into a clear spoken lesson."
+                            ),
+                        )
+                        with gr.Accordion("LM Studio settings", open=False):
+                            llm_base_url = gr.Textbox(
+                                label="Base URL",
+                                value=config.lm_studio_base_url,
+                                info="OpenAI-compatible endpoint (for example http://127.0.0.1:1234/v1)",
+                            )
+                            with gr.Row():
+                                llm_model = gr.Textbox(
+                                    label="Model",
+                                    value=config.lm_studio_model,
+                                )
+                                llm_api_key = gr.Textbox(
+                                    label="API key",
+                                    value=config.lm_studio_api_key,
+                                    type="password",
+                                )
+                            with gr.Row():
+                                llm_temperature = gr.Slider(
+                                    minimum=0.0,
+                                    maximum=2.0,
+                                    value=config.lm_studio_temperature,
+                                    step=0.05,
+                                    label="Temperature",
+                                )
+                                llm_max_tokens = gr.Slider(
+                                    minimum=64,
+                                    maximum=32768,
+                                    value=config.lm_studio_max_tokens,
+                                    step=64,
+                                    label="Max tokens",
+                                )
+                                llm_timeout_seconds = gr.Slider(
+                                    minimum=5,
+                                    maximum=600,
+                                    value=config.lm_studio_timeout_seconds,
+                                    step=5,
+                                    label="Timeout (s)",
+                                )
+                            llm_extra_instructions = gr.Textbox(
+                                label="Extra instructions (optional)",
+                                lines=4,
+                                placeholder="Optional extra constraints for the lesson output.",
+                            )
+                        with gr.Row():
+                            llm_generate_btn = gr.Button(
+                                "Generate lesson",
+                                variant="primary",
+                                interactive=callable(build_lesson_for_tts),
+                            )
+                            llm_to_tts_btn = gr.Button(
+                                "Use lesson as TTS input",
+                                variant="secondary",
+                            )
+                        llm_output_text = gr.Textbox(
+                            label="Lesson output (English)",
+                            lines=16,
+                        )
+                        llm_status = gr.Textbox(
+                            label="LLM status",
+                            interactive=False,
+                        )
+                    with gr.Tab("Morphology DB"):
+                        gr.Markdown(
+                            "Simple CRUD for `morphology.sqlite3`: browse rows, add JSON row, "
+                            "update by id/key, and delete by id/key."
+                        )
+                        with gr.Accordion("CRUD examples", open=False):
+                            gr.Markdown(
+                                "Add example (`occurrences`):\n"
+                                "```json\n"
+                                "{\"source\":\"manual\",\"token_text\":\"Cats\",\"lemma\":\"cat\",\"upos\":\"NOUN\"}\n"
+                                "```\n\n"
+                                "Update example (`occurrences`, row id `15`):\n"
+                                "Row id: `15`\n"
+                                "```json\n"
+                                "{\"token_text\":\"Dogs\",\"lemma\":\"dog\"}\n"
+                                "```\n\n"
+                                "Delete example (`occurrences`, row id `15`):\n"
+                                "Row id: `15`\n\n"
+                                "For `lexemes`, use `dedup_key` as row id (example: `run|verb`)."
+                            )
+                        with gr.Row():
+                            morph_db_dataset = gr.Dropdown(
+                                [
+                                    ("Token occurrences", "occurrences"),
+                                    ("Lexemes", "lexemes"),
+                                    ("Expressions", "expressions"),
+                                ],
+                                value="occurrences",
+                                label="Dataset",
+                            )
+                            morph_db_limit = gr.Slider(
+                                minimum=1,
+                                maximum=1000,
+                                value=100,
+                                step=1,
+                                label="Limit",
+                            )
+                            morph_db_offset = gr.Number(
+                                value=0,
+                                precision=0,
+                                label="Offset",
+                            )
+                            morph_db_refresh_btn = gr.Button(
+                                "Refresh",
+                                variant="secondary",
+                                interactive=callable(morphology_db_view),
+                            )
+                        morph_db_table = gr.Dataframe(
+                            headers=["No data"],
+                            value=[[]],
+                            interactive=False,
+                            wrap=True,
+                            label="Rows",
+                        )
+                        morph_db_status = gr.Textbox(
+                            label="DB status",
+                            interactive=False,
+                        )
+                        with gr.Accordion("Add row", open=False):
+                            morph_db_add_json = gr.Textbox(
+                                label="Row JSON",
+                                lines=8,
+                                value='{"source":"manual"}',
+                                info=(
+                                    "Provide JSON object. Minimal fields are enough: "
+                                    "missing values are auto-filled."
+                                ),
+                            )
+                            morph_db_add_btn = gr.Button(
+                                "Add row",
+                                variant="primary",
+                                interactive=callable(morphology_db_add),
+                            )
+                        with gr.Accordion("Update / Delete row", open=False):
+                            morph_db_row_id = gr.Textbox(
+                                label="Row id (or dedup_key for lexemes)",
+                            )
+                            morph_db_update_json = gr.Textbox(
+                                label="Update JSON",
+                                lines=8,
+                                value='{"source":"manual"}',
+                                info="Only provided fields are updated.",
+                            )
+                            with gr.Row():
+                                morph_db_update_btn = gr.Button(
+                                    "Update row",
+                                    variant="secondary",
+                                    interactive=callable(morphology_db_update),
+                                )
+                                morph_db_delete_btn = gr.Button(
+                                    "Delete row",
+                                    variant="stop",
+                                    interactive=callable(morphology_db_delete),
+                                )
 
         language.change(
             fn=on_language_change,
@@ -434,6 +631,46 @@ def create_gradio_app(
                 outputs=[export_csv_file, export_csv_status],
                 api_name=False,
             )
+        if callable(morphology_db_view):
+            morph_db_refresh_btn.click(
+                fn=morphology_db_view,
+                inputs=[morph_db_dataset, morph_db_limit, morph_db_offset],
+                outputs=[morph_db_table, morph_db_status],
+                api_name=False,
+            )
+            morph_db_dataset.change(
+                fn=morphology_db_view,
+                inputs=[morph_db_dataset, morph_db_limit, morph_db_offset],
+                outputs=[morph_db_table, morph_db_status],
+                api_name=False,
+            )
+        if callable(morphology_db_add):
+            morph_db_add_btn.click(
+                fn=morphology_db_add,
+                inputs=[morph_db_dataset, morph_db_add_json, morph_db_limit, morph_db_offset],
+                outputs=[morph_db_table, morph_db_status],
+                api_name=False,
+            )
+        if callable(morphology_db_update):
+            morph_db_update_btn.click(
+                fn=morphology_db_update,
+                inputs=[
+                    morph_db_dataset,
+                    morph_db_row_id,
+                    morph_db_update_json,
+                    morph_db_limit,
+                    morph_db_offset,
+                ],
+                outputs=[morph_db_table, morph_db_status],
+                api_name=False,
+            )
+        if callable(morphology_db_delete):
+            morph_db_delete_btn.click(
+                fn=morphology_db_delete,
+                inputs=[morph_db_dataset, morph_db_row_id, morph_db_limit, morph_db_offset],
+                outputs=[morph_db_table, morph_db_status],
+                api_name=False,
+            )
         if callable(load_pronunciation_rules):
             pronunciation_load_btn.click(
                 fn=load_pronunciation_rules,
@@ -458,6 +695,29 @@ def create_gradio_app(
             pronunciation_export_btn.click(
                 fn=export_pronunciation_rules,
                 outputs=[pronunciation_export_file, pronunciation_status],
+                api_name=False,
+            )
+        if callable(build_lesson_for_tts):
+            llm_generate_btn.click(
+                fn=build_lesson_for_tts,
+                inputs=[
+                    llm_raw_text,
+                    llm_base_url,
+                    llm_api_key,
+                    llm_model,
+                    llm_temperature,
+                    llm_max_tokens,
+                    llm_timeout_seconds,
+                    llm_extra_instructions,
+                ],
+                outputs=[llm_output_text, llm_status],
+                api_name=False,
+            )
+        if llm_to_tts_btn is not None:
+            llm_to_tts_btn.click(
+                fn=lambda generated_text: generated_text or "",
+                inputs=[llm_output_text],
+                outputs=[text],
                 api_name=False,
             )
 
