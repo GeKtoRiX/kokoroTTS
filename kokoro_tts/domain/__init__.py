@@ -16,19 +16,32 @@ from .normalization import (
 from .splitting import smart_split, split_parts, split_sentences
 from .voice import (
     CHOICES,
+    DEFAULT_VOICE,
+    LANGUAGE_CHOICES,
+    LANGUAGE_LABELS,
+    default_voice_for_lang,
+    get_voice_choices,
     limit_dialogue_parts,
+    normalize_lang_code,
     normalize_voice_input,
     normalize_voice_tag,
     parse_voice_segments,
     resolve_voice,
     summarize_voice,
+    voice_language,
 )
 
 __all__ = [
     "CHOICES",
+    "DEFAULT_VOICE",
+    "LANGUAGE_CHOICES",
+    "LANGUAGE_LABELS",
     "TextNormalizer",
+    "default_voice_for_lang",
     "digits_to_words",
+    "get_voice_choices",
     "limit_dialogue_parts",
+    "normalize_lang_code",
     "normalize_numbers",
     "normalize_times",
     "normalize_voice_input",
@@ -46,4 +59,5 @@ __all__ = [
     "split_sentences",
     "summarize_voice",
     "time_to_words",
+    "voice_language",
 ]

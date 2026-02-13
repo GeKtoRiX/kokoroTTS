@@ -1,6 +1,7 @@
 """Gradio entrypoint and compatibility facade for Kokoro TTS."""
 from __future__ import annotations
 
+import inspect
 import os
 import platform
 import sys
@@ -148,6 +149,7 @@ HISTORY_SERVICE = None
 APP_STATE = None
 app = None
 API_OPEN = None
+SSR_MODE = os.getenv("KOKORO_SSR_MODE", "").strip().lower() in ("1", "true", "yes")
 
 
 @spaces.GPU(duration=30)
@@ -300,7 +302,22 @@ def launch() -> None:
     queue_kwargs = {"api_open": API_OPEN}
     if CONFIG.default_concurrency_limit is not None:
         queue_kwargs["default_concurrency_limit"] = CONFIG.default_concurrency_limit
-    app.queue(**queue_kwargs).launch(show_api=API_OPEN, ssr_mode=True)
+    queued = app.queue(**queue_kwargs)
+    launch_params = inspect.signature(queued.launch).parameters
+    launch_kwargs = {}
+
+    # Gradio API visibility changed across major versions.
+    if "show_api" in launch_params:
+        launch_kwargs["show_api"] = API_OPEN
+    elif "footer_links" in launch_params:
+        launch_kwargs["footer_links"] = (
+            ["api", "gradio", "settings"] if API_OPEN else ["gradio", "settings"]
+        )
+
+    if "ssr_mode" in launch_params:
+        launch_kwargs["ssr_mode"] = SSR_MODE
+
+    queued.launch(**launch_kwargs)
 
 
 if __name__ == "__main__":

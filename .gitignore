@@ -21,6 +21,8 @@ dist/
 logs/
 outputs/
 *.log
+tools/
+.env
 
 # OS files
 .DS_Store
