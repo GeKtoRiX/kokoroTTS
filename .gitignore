@@ -21,6 +21,7 @@ dist/
 logs/
 outputs/
 *.log
+data/morphology.sqlite3
 tools/
 .env
 
