@@ -36,6 +36,14 @@ class AudioWriter:
         safe = re.sub(r"[^A-Za-z0-9_-]+", "_", voice).strip("_")
         return safe or "voice"
 
+    def _dated_output_dirs(self) -> tuple[str, str]:
+        date_dir = os.path.join(self.output_dir, datetime.now().strftime("%Y-%m-%d"))
+        records_dir = os.path.join(date_dir, "records")
+        vocabulary_dir = os.path.join(date_dir, "vocabulary")
+        os.makedirs(records_dir, exist_ok=True)
+        os.makedirs(vocabulary_dir, exist_ok=True)
+        return records_dir, vocabulary_dir
+
     def resolve_output_format(self, output_format: str) -> str:
         fmt = (output_format or "wav").strip().lower().lstrip(".")
         if fmt not in OUTPUT_FORMATS:
@@ -110,18 +118,17 @@ class AudioWriter:
         output_format: str,
     ) -> list[str]:
         output_format = self.resolve_output_format(output_format)
-        date_dir = os.path.join(self.output_dir, datetime.now().strftime("%Y-%m-%d"))
-        os.makedirs(date_dir, exist_ok=True)
+        records_dir, _ = self._dated_output_dirs()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         safe_voice = self._sanitize_voice_id(voice)
         suffix = uuid.uuid4().hex[:8]
         if parts_count <= 0:
             return []
         if parts_count == 1:
-            return [os.path.join(date_dir, f"{timestamp}_{safe_voice}_{suffix}.{output_format}")]
+            return [os.path.join(records_dir, f"{timestamp}_{safe_voice}_{suffix}.{output_format}")]
         return [
             os.path.join(
-                date_dir,
+                records_dir,
                 f"{timestamp}_{safe_voice}_{suffix}_part{index:02d}.{output_format}",
             )
             for index in range(1, parts_count + 1)

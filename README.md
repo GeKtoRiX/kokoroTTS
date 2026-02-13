@@ -8,6 +8,10 @@ Local Gradio app for `hexgrad/Kokoro-82M` with:
 - text normalization (time/number)
 - output formats `wav/mp3/ogg` (ffmpeg fallback handling)
 
+## Known issues
+
+- `Stream`: in some sessions, voice can stick to the first selected voice even after changing it in UI. This bug is currently unresolved.
+
 ## Isolation rule
 
 This project is configured for **project-local runtime only**:
@@ -70,6 +74,10 @@ When `MORPH_DB_ENABLED=1`, each `generate` run writes English token analysis int
 - `<prefix>lexemes` (deduplicated by key, insert-ignore only)
 - `<prefix>token_occurrences` (token occurrences, insert-ignore only)
 - `<prefix>expressions` (phrasal verbs and idioms)
+
+Generated files are grouped by date inside `OUTPUT_DIR`:
+- `OUTPUT_DIR/YYYY-MM-DD/records` for audio files
+- `OUTPUT_DIR/YYYY-MM-DD/vocabulary` for morphology exports (`.ods`/`.csv`)
 
 UI includes a `Morphology DB Export` accordion with `Download ODS` for `lexemes`, `token_occurrences`, `expressions`, or `POS table` (LibreOffice Calc native format).
 `POS table` export uses columns by parts of speech (Noun, Verb, Adjective, etc.) and rows with words.

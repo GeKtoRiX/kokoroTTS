@@ -94,6 +94,7 @@ class MorphologyRepository:
         self.expressions_table = f"{self.table_prefix}expressions"
         self.analyzer = analyzer or analyze_english_text
         self.expression_extractor = expression_extractor or extract_english_expressions
+        self._schema_ready = False
         if self.enabled and not self.db_path:
             self.logger.warning(
                 "Morphology DB enabled but MORPH_DB_PATH is empty; disabling DB writes."
@@ -108,13 +109,12 @@ class MorphologyRepository:
     ) -> None:
         if not self.enabled:
             return
-        rows = self._collect_rows(parts, source)
-        expression_rows = self._collect_expression_rows(parts, source)
+        rows, expression_rows = self._collect_ingest_rows(parts, source)
         if not rows and not expression_rows:
             return
         lexeme_rows = _unique_lexeme_rows(rows)
-        occurrence_rows = _unique_occurrence_rows(rows)
-        unique_expression_rows = _unique_expression_rows(expression_rows)
+        occurrence_rows = _occurrence_rows(rows)
+        unique_expression_rows = _expression_rows(expression_rows)
         if not lexeme_rows and not occurrence_rows and not unique_expression_rows:
             return
         connection = None
@@ -122,11 +122,13 @@ class MorphologyRepository:
             self._ensure_parent_dir()
             connection = sqlite3.connect(self.db_path)
             with connection:
-                connection.execute(self._sql_create_lexemes_table())
-                connection.execute(self._sql_create_occurrences_table())
-                connection.execute(self._sql_create_expressions_table())
-                for statement in self._sql_create_occurrence_indexes():
-                    connection.execute(statement)
+                if not self._schema_ready:
+                    connection.execute(self._sql_create_lexemes_table())
+                    connection.execute(self._sql_create_occurrences_table())
+                    connection.execute(self._sql_create_expressions_table())
+                    for statement in self._sql_create_occurrence_indexes():
+                        connection.execute(statement)
+                    self._schema_ready = True
                 if lexeme_rows:
                     connection.executemany(self._sql_insert_lexeme(), lexeme_rows)
                 if occurrence_rows:
@@ -161,14 +163,14 @@ class MorphologyRepository:
     ) -> str | None:
         if not self.enabled or not self.db_path or not os.path.isfile(self.db_path):
             return None
+        export_dir = self._resolve_vocabulary_export_dir(output_dir)
         normalized_dataset = (dataset or "lexemes").strip().lower()
         if normalized_dataset in ("pos_table", "upos_table", "parts_of_speech"):
-            return self._export_pos_table_csv(output_dir)
+            return self._export_pos_table_csv(export_dir)
         table_name = self._table_name_for_dataset(normalized_dataset)
-        self._ensure_dir(output_dir)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{table_name}_{timestamp}.csv"
-        csv_path = os.path.join(output_dir, filename)
+        csv_path = os.path.join(export_dir, filename)
 
         connection = None
         try:
@@ -195,7 +197,7 @@ class MorphologyRepository:
     ) -> str | None:
         if not self.enabled or not self.db_path or not os.path.isfile(self.db_path):
             return None
-        self._ensure_dir(output_dir)
+        export_dir = self._resolve_vocabulary_export_dir(output_dir)
         normalized_dataset = (dataset or "lexemes").strip().lower()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -204,7 +206,7 @@ class MorphologyRepository:
             if not rows:
                 return None
             filename = f"{self.table_prefix}pos_table_{timestamp}.ods"
-            output_path = os.path.join(output_dir, filename)
+            output_path = os.path.join(export_dir, filename)
             self._write_ods(headers, rows, output_path, sheet_name="POS Table")
             return output_path
 
@@ -213,7 +215,7 @@ class MorphologyRepository:
         if not rows:
             return None
         filename = f"{table_name}_{timestamp}.ods"
-        output_path = os.path.join(output_dir, filename)
+        output_path = os.path.join(export_dir, filename)
         self._write_ods(headers, rows, output_path, sheet_name=table_name)
         return output_path
 
@@ -269,147 +271,108 @@ class MorphologyRepository:
             entries = cursor.fetchall()
             if not entries:
                 return None
-            by_upos: dict[str, list[str]] = {}
-            for upos, lemma in entries:
-                upos_text = str(upos or "").strip().upper()
-                lemma_text = str(lemma or "").strip()
-                if not upos_text or not lemma_text:
-                    continue
-                bucket = by_upos.setdefault(upos_text, [])
-                if lemma_text not in bucket:
-                    bucket.append(lemma_text)
-
-            if not by_upos:
-                return None
-            column_pairs = list(POS_TABLE_COLUMNS)
-            known_upos = {upos for _, upos in column_pairs}
-            extra_upos = sorted([upos for upos in by_upos if upos not in known_upos])
-            for upos in extra_upos:
-                column_pairs.append((upos, upos))
-
-            headers = [label for label, _ in column_pairs]
-            max_rows = max((len(by_upos.get(upos, [])) for _, upos in column_pairs), default=0)
-            if max_rows == 0:
+            headers, rows = _build_pos_table_from_entries(entries)
+            if not rows:
                 return None
 
             with open(csv_path, "w", newline="", encoding="utf-8-sig") as handle:
                 writer = csv.writer(handle)
                 writer.writerow(headers)
-                for row_index in range(max_rows):
-                    row = []
-                    for _, upos in column_pairs:
-                        words = by_upos.get(upos, [])
-                        row.append(words[row_index] if row_index < len(words) else "")
-                    writer.writerow(row)
+                writer.writerows(rows)
             return csv_path
         finally:
             if connection is not None:
                 connection.close()
 
-    def _collect_rows(
+    def _collect_ingest_rows(
         self,
         parts: Sequence[Sequence[tuple[str, str]]],
         source: str,
-    ) -> list[MorphRow]:
+    ) -> tuple[list[MorphRow], list[ExpressionRow]]:
         source = (source or "unknown").strip() or "unknown"
-        rows: list[MorphRow] = []
+        token_rows: list[MorphRow] = []
+        expression_rows: list[ExpressionRow] = []
         for part_index, segments in enumerate(parts):
             for segment_index, (voice, text) in enumerate(segments):
                 segment_text = (text or "").strip()
                 if not segment_text:
                     continue
+                segment_hash = hashlib.sha1(
+                    segment_text.encode("utf-8"),
+                    usedforsecurity=False,
+                ).hexdigest()
                 analysis = self.analyzer(segment_text)
-                items = analysis.get("items", [])
-                if not isinstance(items, list):
-                    continue
-                segment_hash = hashlib.sha1(
-                    segment_text.encode("utf-8"),
-                    usedforsecurity=False,
-                ).hexdigest()
-                for token_index, item in enumerate(items):
-                    if not isinstance(item, dict):
-                        continue
-                    token = str(item.get("token", "")).strip()
-                    if not token:
-                        continue
-                    lemma = str(item.get("lemma", token)).strip() or token
-                    upos = str(item.get("upos", "X")).strip().upper() or "X"
-                    feats = item.get("feats") if isinstance(item.get("feats"), dict) else {}
-                    start = _to_int(item.get("start"), 0)
-                    end = _to_int(item.get("end"), start)
-                    dedup_key = str(item.get("key", "")).strip() or _build_key(lemma, upos)
-                    rows.append(
-                        MorphRow(
-                            source=source,
-                            part_index=part_index,
-                            segment_index=segment_index,
-                            token_index=token_index,
-                            voice=str(voice or ""),
-                            token=token,
-                            lemma=lemma,
-                            upos=upos,
-                            feats_json=json.dumps(feats, ensure_ascii=False, sort_keys=True),
-                            start=start,
-                            end=end,
-                            key=dedup_key,
-                            text_sha1=segment_hash,
+                items = analysis.get("items", []) if isinstance(analysis, dict) else []
+                if isinstance(items, list):
+                    for token_index, item in enumerate(items):
+                        if not isinstance(item, dict):
+                            continue
+                        token = str(item.get("token", "")).strip()
+                        if not token:
+                            continue
+                        lemma = str(item.get("lemma", token)).strip() or token
+                        upos = str(item.get("upos", "X")).strip().upper() or "X"
+                        raw_feats = item.get("feats")
+                        feats = raw_feats if isinstance(raw_feats, dict) else {}
+                        start = _to_int(item.get("start"), 0)
+                        end = _to_int(item.get("end"), start)
+                        dedup_key = str(item.get("key", "")).strip() or _build_key(lemma, upos)
+                        token_rows.append(
+                            MorphRow(
+                                source=source,
+                                part_index=part_index,
+                                segment_index=segment_index,
+                                token_index=token_index,
+                                voice=str(voice or ""),
+                                token=token,
+                                lemma=lemma,
+                                upos=upos,
+                                feats_json=json.dumps(feats, ensure_ascii=False, sort_keys=True),
+                                start=start,
+                                end=end,
+                                key=dedup_key,
+                                text_sha1=segment_hash,
+                            )
                         )
-                    )
-        return rows
 
-    def _collect_expression_rows(
-        self,
-        parts: Sequence[Sequence[tuple[str, str]]],
-        source: str,
-    ) -> list[ExpressionRow]:
-        source = (source or "unknown").strip() or "unknown"
-        rows: list[ExpressionRow] = []
-        for part_index, segments in enumerate(parts):
-            for segment_index, (voice, text) in enumerate(segments):
-                segment_text = (text or "").strip()
-                if not segment_text:
-                    continue
                 expressions = self.expression_extractor(segment_text)
-                if not expressions:
-                    continue
-                segment_hash = hashlib.sha1(
-                    segment_text.encode("utf-8"),
-                    usedforsecurity=False,
-                ).hexdigest()
-                for expression_index, item in enumerate(expressions):
-                    if not isinstance(item, dict):
-                        continue
-                    expression_text = str(item.get("text", "")).strip()
-                    if not expression_text:
-                        continue
-                    expression_lemma = str(item.get("lemma", expression_text)).strip() or expression_text
-                    expression_type = str(item.get("kind", "expression")).strip() or "expression"
-                    start = _to_int(item.get("start"), 0)
-                    end = _to_int(item.get("end"), start)
-                    expression_key = str(item.get("key", "")).strip() or (
-                        f"{expression_lemma.lower()}|{expression_type.lower()}"
-                    )
-                    match_source = str(item.get("source", "unknown")).strip() or "unknown"
-                    wordnet_hit = 1 if bool(item.get("wordnet")) else 0
-                    rows.append(
-                        ExpressionRow(
-                            source=source,
-                            part_index=part_index,
-                            segment_index=segment_index,
-                            expression_index=expression_index,
-                            voice=str(voice or ""),
-                            expression_text=expression_text,
-                            expression_lemma=expression_lemma,
-                            expression_type=expression_type,
-                            start=start,
-                            end=end,
-                            expression_key=expression_key,
-                            match_source=match_source,
-                            wordnet=wordnet_hit,
-                            text_sha1=segment_hash,
+                if expressions:
+                    for expression_index, item in enumerate(expressions):
+                        if not isinstance(item, dict):
+                            continue
+                        expression_text = str(item.get("text", "")).strip()
+                        if not expression_text:
+                            continue
+                        expression_lemma = (
+                            str(item.get("lemma", expression_text)).strip() or expression_text
                         )
-                    )
-        return rows
+                        expression_type = str(item.get("kind", "expression")).strip() or "expression"
+                        start = _to_int(item.get("start"), 0)
+                        end = _to_int(item.get("end"), start)
+                        expression_key = str(item.get("key", "")).strip() or (
+                            f"{expression_lemma.lower()}|{expression_type.lower()}"
+                        )
+                        match_source = str(item.get("source", "unknown")).strip() or "unknown"
+                        wordnet_hit = 1 if bool(item.get("wordnet")) else 0
+                        expression_rows.append(
+                            ExpressionRow(
+                                source=source,
+                                part_index=part_index,
+                                segment_index=segment_index,
+                                expression_index=expression_index,
+                                voice=str(voice or ""),
+                                expression_text=expression_text,
+                                expression_lemma=expression_lemma,
+                                expression_type=expression_type,
+                                start=start,
+                                end=end,
+                                expression_key=expression_key,
+                                match_source=match_source,
+                                wordnet=wordnet_hit,
+                                text_sha1=segment_hash,
+                            )
+                        )
+        return token_rows, expression_rows
 
     def _ensure_parent_dir(self) -> None:
         parent = os.path.dirname(os.path.abspath(self.db_path))
@@ -419,6 +382,14 @@ class MorphologyRepository:
     def _ensure_dir(self, path: str) -> None:
         target = os.path.abspath(path)
         os.makedirs(target, exist_ok=True)
+
+    def _resolve_vocabulary_export_dir(self, output_dir: str) -> str:
+        date_dir = os.path.join(output_dir, datetime.now().strftime("%Y-%m-%d"))
+        records_dir = os.path.join(date_dir, "records")
+        vocabulary_dir = os.path.join(date_dir, "vocabulary")
+        self._ensure_dir(records_dir)
+        self._ensure_dir(vocabulary_dir)
+        return vocabulary_dir
 
     def _table_name_for_dataset(self, dataset: str) -> str:
         normalized = (dataset or "lexemes").strip().lower()
@@ -450,36 +421,7 @@ class MorphologyRepository:
             entries = cursor.fetchall()
             if not entries:
                 return [], []
-            by_upos: dict[str, list[str]] = {}
-            for upos, lemma in entries:
-                upos_text = str(upos or "").strip().upper()
-                lemma_text = str(lemma or "").strip()
-                if not upos_text or not lemma_text:
-                    continue
-                bucket = by_upos.setdefault(upos_text, [])
-                if lemma_text not in bucket:
-                    bucket.append(lemma_text)
-
-            if not by_upos:
-                return [], []
-            column_pairs = list(POS_TABLE_COLUMNS)
-            known_upos = {upos for _, upos in column_pairs}
-            extra_upos = sorted([upos for upos in by_upos if upos not in known_upos])
-            for upos in extra_upos:
-                column_pairs.append((upos, upos))
-
-            headers = [label for label, _ in column_pairs]
-            max_rows = max((len(by_upos.get(upos, [])) for _, upos in column_pairs), default=0)
-            if max_rows == 0:
-                return [], []
-            rows: list[list[str]] = []
-            for row_index in range(max_rows):
-                row: list[str] = []
-                for _, upos in column_pairs:
-                    words = by_upos.get(upos, [])
-                    row.append(words[row_index] if row_index < len(words) else "")
-                rows.append(row)
-            return headers, rows
+            return _build_pos_table_from_entries(entries)
         finally:
             if connection is not None:
                 connection.close()
@@ -603,6 +545,92 @@ def _stringify_cell(value: object) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def _build_pos_table_from_entries(
+    entries: Sequence[tuple[object, object]],
+) -> tuple[list[str], list[list[str]]]:
+    by_upos: dict[str, list[str]] = {}
+    seen_by_upos: dict[str, set[str]] = {}
+    for upos, lemma in entries:
+        upos_text = str(upos or "").strip().upper()
+        lemma_text = str(lemma or "").strip()
+        if not upos_text or not lemma_text:
+            continue
+        seen = seen_by_upos.setdefault(upos_text, set())
+        if lemma_text in seen:
+            continue
+        seen.add(lemma_text)
+        by_upos.setdefault(upos_text, []).append(lemma_text)
+
+    if not by_upos:
+        return [], []
+    column_pairs = _resolve_pos_column_pairs(by_upos)
+    headers = [label for label, _ in column_pairs]
+    max_rows = max((len(by_upos.get(upos, [])) for _, upos in column_pairs), default=0)
+    if max_rows == 0:
+        return [], []
+
+    rows: list[list[str]] = []
+    for row_index in range(max_rows):
+        row: list[str] = []
+        for _, upos in column_pairs:
+            words = by_upos.get(upos, [])
+            row.append(words[row_index] if row_index < len(words) else "")
+        rows.append(row)
+    return headers, rows
+
+
+def _resolve_pos_column_pairs(by_upos: dict[str, list[str]]) -> list[tuple[str, str]]:
+    column_pairs = list(POS_TABLE_COLUMNS)
+    known_upos = {upos for _, upos in column_pairs}
+    extra_upos = sorted([upos for upos in by_upos if upos not in known_upos])
+    for upos in extra_upos:
+        column_pairs.append((upos, upos))
+    return column_pairs
+
+
+def _occurrence_rows(rows: Iterable[MorphRow]) -> list[tuple[object, ...]]:
+    return [
+        (
+            row.source,
+            row.part_index,
+            row.segment_index,
+            row.token_index,
+            row.voice,
+            row.token,
+            row.lemma,
+            row.upos,
+            row.feats_json,
+            row.start,
+            row.end,
+            row.key,
+            row.text_sha1,
+        )
+        for row in rows
+    ]
+
+
+def _expression_rows(rows: Iterable[ExpressionRow]) -> list[tuple[object, ...]]:
+    return [
+        (
+            row.source,
+            row.part_index,
+            row.segment_index,
+            row.expression_index,
+            row.voice,
+            row.expression_text,
+            row.expression_lemma,
+            row.expression_type,
+            row.start,
+            row.end,
+            row.expression_key,
+            row.match_source,
+            row.wordnet,
+            row.text_sha1,
+        )
+        for row in rows
+    ]
 
 
 def _unique_lexeme_rows(rows: Iterable[MorphRow]) -> list[tuple[str, str, str, str]]:

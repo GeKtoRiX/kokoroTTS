@@ -2,6 +2,7 @@ import logging
 import sqlite3
 import csv
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from kokoro_tts.storage.morphology_repository import MorphologyRepository
@@ -129,6 +130,10 @@ def test_morphology_repository_exports_lexemes_csv(tmp_path: Path):
     csv_path = repo.export_csv(dataset="lexemes", output_dir=str(export_dir))
     assert csv_path is not None
     assert Path(csv_path).is_file()
+    date_dir = export_dir / datetime.now().strftime("%Y-%m-%d")
+    assert Path(csv_path).parent == date_dir / "vocabulary"
+    assert (date_dir / "records").is_dir()
+    assert (date_dir / "vocabulary").is_dir()
 
     with open(csv_path, newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.reader(handle))
@@ -237,6 +242,10 @@ def test_morphology_repository_exports_lexemes_ods(tmp_path: Path):
     assert ods_path is not None
     assert Path(ods_path).suffix == ".ods"
     assert Path(ods_path).is_file()
+    date_dir = export_dir / datetime.now().strftime("%Y-%m-%d")
+    assert Path(ods_path).parent == date_dir / "vocabulary"
+    assert (date_dir / "records").is_dir()
+    assert (date_dir / "vocabulary").is_dir()
     with zipfile.ZipFile(ods_path, "r") as archive:
         names = set(archive.namelist())
     assert "content.xml" in names
