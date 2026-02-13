@@ -211,15 +211,22 @@ def normalize_numbers(text: str) -> str:
     if not DIGIT_RE.search(text):
         return text
     replacements = 0
+    int_words_cache: dict[str, str | None] = {}
 
     def int_to_words(value_str: str) -> str | None:
+        if value_str in int_words_cache:
+            return int_words_cache[value_str]
         try:
             value = int(value_str.replace(",", ""))
         except ValueError:
+            int_words_cache[value_str] = None
             return None
         if value > 9999:
+            int_words_cache[value_str] = None
             return None
-        return number_to_words_0_9999(value)
+        words = number_to_words_0_9999(value)
+        int_words_cache[value_str] = words
+        return words
 
     def repl_percent(match: re.Match[str]) -> str:
         nonlocal replacements

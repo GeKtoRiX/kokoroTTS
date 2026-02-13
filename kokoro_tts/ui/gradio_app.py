@@ -64,43 +64,14 @@ def create_gradio_app(
     export_csv_dataset = None
     export_csv_file = None
     export_csv_status = None
-
-    with gr.Blocks(theme=APP_THEME) as generate_tab:
-        out_audio = gr.Audio(label="Output Audio", interactive=False, streaming=False, autoplay=True)
-        generate_btn = gr.Button("Generate", variant="primary")
-        history_state = gr.State([])
-        if config.history_limit > 0:
-            with gr.Accordion("History", open=False):
-                clear_history_btn = gr.Button("Clear history", variant="secondary")
-                for index in range(1, config.history_limit + 1):
-                    history_audios.append(
-                        gr.Audio(label=f"History {index}", interactive=False, streaming=False)
-                    )
-        with gr.Accordion("Output Tokens", open=True):
-            out_ps = gr.Textbox(
-                interactive=False,
-                show_label=False,
-                info="Tokens used to generate the audio, up to 510 context length.",
-            )
-            tokenize_btn = gr.Button("Tokenize", variant="secondary")
-            gr.Markdown(TOKEN_NOTE)
-            predict_btn = gr.Button("Predict", variant="secondary", visible=False)
-        if config.morph_db_enabled and callable(export_morphology_sheet):
-            with gr.Accordion("Morphology DB Export", open=False):
-                gr.Markdown("Download LibreOffice Calc spreadsheet (.ods).")
-                export_csv_dataset = gr.Dropdown(
-                    [
-                        ("Lexemes", "lexemes"),
-                        ("Token occurrences", "occurrences"),
-                        ("Expressions (phrasal verbs and idioms)", "expressions"),
-                        ("POS table (columns by part of speech)", "pos_table"),
-                    ],
-                    value="lexemes",
-                    label="Dataset",
-                )
-                export_csv_btn = gr.Button("Download ODS", variant="secondary")
-                export_csv_file = gr.File(label="ODS file", interactive=False)
-                export_csv_status = gr.Textbox(label="Export status", interactive=False)
+    out_audio = None
+    out_ps = None
+    tokenize_btn = None
+    predict_btn = None
+    generate_btn = None
+    out_stream = None
+    stream_btn = None
+    stop_btn = None
 
     stream_note = [
         "⚠️ There is an unknown Gradio bug that might yield no audio the first time you click `Stream`."
@@ -150,19 +121,11 @@ def create_gradio_app(
         values = [None] * config.history_limit
         return (updated, *values)
 
-    with gr.Blocks(theme=APP_THEME) as stream_tab:
-        out_stream = gr.Audio(label="Output Audio Stream", interactive=False, streaming=True, autoplay=True)
-        with gr.Row():
-            stream_btn = gr.Button("Stream", variant="primary")
-            stop_btn = gr.Button("Stop", variant="stop")
-        with gr.Accordion("Note", open=True):
-            gr.Markdown(stream_note)
-            gr.DuplicateButton()
-
     api_open = config.space_id != "hexgrad/Kokoro-TTS"
     api_name = None if api_open else False
     logger.debug("API_OPEN=%s", api_open)
     with gr.Blocks(theme=APP_THEME) as app:
+        history_state = gr.State([])
         with gr.Row():
             with gr.Column():
                 stream_cap = "∞" if config.char_limit is None else config.char_limit
@@ -231,7 +194,64 @@ def create_gradio_app(
                 with gr.Accordion("Dialog tags", open=False):
                     gr.Markdown(DIALOGUE_NOTE)
             with gr.Column():
-                gr.TabbedInterface([generate_tab, stream_tab], ["Generate", "Stream"])
+                with gr.Tabs():
+                    with gr.Tab("Generate"):
+                        out_audio = gr.Audio(
+                            label="Output Audio",
+                            interactive=False,
+                            streaming=False,
+                            autoplay=True,
+                        )
+                        generate_btn = gr.Button("Generate", variant="primary")
+                        if config.history_limit > 0:
+                            with gr.Accordion("History", open=False):
+                                clear_history_btn = gr.Button("Clear history", variant="secondary")
+                                for index in range(1, config.history_limit + 1):
+                                    history_audios.append(
+                                        gr.Audio(
+                                            label=f"History {index}",
+                                            interactive=False,
+                                            streaming=False,
+                                        )
+                                    )
+                        with gr.Accordion("Output Tokens", open=True):
+                            out_ps = gr.Textbox(
+                                interactive=False,
+                                show_label=False,
+                                info="Tokens used to generate the audio, up to 510 context length.",
+                            )
+                            tokenize_btn = gr.Button("Tokenize", variant="secondary")
+                            gr.Markdown(TOKEN_NOTE)
+                            predict_btn = gr.Button("Predict", variant="secondary", visible=False)
+                        if config.morph_db_enabled and callable(export_morphology_sheet):
+                            with gr.Accordion("Morphology DB Export", open=False):
+                                gr.Markdown("Download LibreOffice Calc spreadsheet (.ods).")
+                                export_csv_dataset = gr.Dropdown(
+                                    [
+                                        ("Lexemes", "lexemes"),
+                                        ("Token occurrences", "occurrences"),
+                                        ("Expressions (phrasal verbs and idioms)", "expressions"),
+                                        ("POS table (columns by part of speech)", "pos_table"),
+                                    ],
+                                    value="lexemes",
+                                    label="Dataset",
+                                )
+                                export_csv_btn = gr.Button("Download ODS", variant="secondary")
+                                export_csv_file = gr.File(label="ODS file", interactive=False)
+                                export_csv_status = gr.Textbox(label="Export status", interactive=False)
+                    with gr.Tab("Stream"):
+                        out_stream = gr.Audio(
+                            label="Output Audio Stream",
+                            interactive=False,
+                            streaming=True,
+                            autoplay=True,
+                        )
+                        with gr.Row():
+                            stream_btn = gr.Button("Stream", variant="primary")
+                            stop_btn = gr.Button("Stop", variant="stop")
+                        with gr.Accordion("Note", open=True):
+                            gr.Markdown(stream_note)
+                            gr.DuplicateButton()
 
         language.change(
             fn=on_language_change,
