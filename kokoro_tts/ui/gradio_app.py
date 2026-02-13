@@ -121,6 +121,9 @@ def create_gradio_app(
         values = [None] * config.history_limit
         return (updated, *values)
 
+    def clear_stream_output():
+        return None
+
     api_open = config.space_id != "hexgrad/Kokoro-TTS"
     api_name = None if api_open else False
     logger.debug("API_OPEN=%s", api_open)
@@ -304,7 +307,13 @@ def create_gradio_app(
             outputs=[out_ps],
             api_name=api_name,
         )
-        stream_event = stream_btn.click(
+        stream_prepare_event = stream_btn.click(
+            fn=clear_stream_output,
+            outputs=[out_stream],
+            queue=False,
+            api_name=False,
+        )
+        stream_event = stream_prepare_event.then(
             fn=generate_all,
             inputs=[
                 text,
@@ -320,7 +329,13 @@ def create_gradio_app(
             outputs=[out_stream],
             api_name=api_name,
         )
-        stop_btn.click(fn=None, cancels=stream_event)
+        stop_btn.click(
+            fn=clear_stream_output,
+            outputs=[out_stream],
+            cancels=stream_event,
+            queue=False,
+            api_name=False,
+        )
         predict_btn.click(
             fn=predict,
             inputs=[
