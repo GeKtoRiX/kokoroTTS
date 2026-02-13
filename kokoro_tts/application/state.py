@@ -10,7 +10,12 @@ import torch
 from ..constants import SAMPLE_RATE
 from ..domain.splitting import smart_split, split_parts
 from ..domain.style import PIPELINE_STYLE_PARAM_NAMES, resolve_style_runtime
-from ..domain.voice import limit_dialogue_parts, parse_voice_segments, summarize_voice
+from ..domain.voice import (
+    DialogueSegment,
+    limit_dialogue_segment_parts,
+    parse_dialogue_segments,
+    summarize_dialogue_voice,
+)
 from ..integrations.model_manager import ModelManager
 from ..storage.audio_writer import AudioWriter
 from .ui_hooks import UiHooks
@@ -47,14 +52,21 @@ class KokoroState:
 
     def _persist_morphology(
         self,
-        parts: list[list[tuple[str, str]]],
+        parts: list[list[DialogueSegment]],
         *,
         source: str,
     ) -> None:
         if self.morphology_repository is None:
             return
+        morph_parts = [
+            [(segment.voice, segment.text) for segment in segments]
+            for segments in parts
+            if segments
+        ]
+        if not morph_parts:
+            return
         try:
-            self.morphology_repository.ingest_dialogue_parts(parts, source=source)
+            self.morphology_repository.ingest_dialogue_parts(morph_parts, source=source)
         except Exception:
             self.logger.exception("Morphology DB write failed")
 
@@ -67,18 +79,29 @@ class KokoroState:
         normalize_numbers_enabled: bool | None = None,
         style_preset: str = "neutral",
     ) -> str:
-        style_preset, speed, _ = resolve_style_runtime(style_preset, speed, 0.0)
         parts = self._prepare_dialogue_parts(
             text,
             voice,
             normalize_times_enabled,
             normalize_numbers_enabled,
+            style_preset,
         )
         if not parts:
             return ""
-        first_voice, first_text = parts[0][0]
-        pipeline = self.model_manager.get_pipeline(first_voice)
-        for _, ps, _ in self._run_pipeline(first_text, first_voice, speed, style_preset, pipeline):
+        first_segment = parts[0][0]
+        segment_style, segment_speed, _ = resolve_style_runtime(
+            first_segment.style_preset,
+            speed,
+            0.0,
+        )
+        pipeline = self.model_manager.get_pipeline(first_segment.voice)
+        for _, ps, _ in self._run_pipeline(
+            first_segment.text,
+            first_segment.voice,
+            segment_speed,
+            segment_style,
+            pipeline,
+        ):
             return ps
         return ""
 
@@ -102,16 +125,21 @@ class KokoroState:
         default_voice: str,
         normalize_times_enabled: bool | None,
         normalize_numbers_enabled: bool | None,
-    ) -> list[list[tuple[str, str]]]:
+        default_style_preset: str,
+    ) -> list[list[DialogueSegment]]:
         parts = split_parts(text)
-        dialogue_parts: list[list[tuple[str, str]]] = []
+        dialogue_parts: list[list[DialogueSegment]] = []
         for part in parts:
-            segments = parse_voice_segments(part, default_voice)
+            segments = parse_dialogue_segments(
+                part,
+                default_voice,
+                default_style_preset=default_style_preset,
+            )
             if segments:
                 dialogue_parts.append(segments)
         if not dialogue_parts:
             return []
-        limited_parts, truncated = limit_dialogue_parts(
+        limited_parts, truncated = limit_dialogue_segment_parts(
             dialogue_parts,
             self.normalizer.char_limit,
         )
@@ -120,11 +148,11 @@ class KokoroState:
                 "Input truncated to %s characters (excluding tags)",
                 self.normalizer.char_limit,
             )
-        normalized_parts: list[list[tuple[str, str]]] = []
+        normalized_parts: list[list[DialogueSegment]] = []
         for segments in limited_parts:
-            normalized_segments: list[tuple[str, str]] = []
-            for segment_voice, segment_text in segments:
-                segment_text = segment_text.strip()
+            normalized_segments: list[DialogueSegment] = []
+            for segment in segments:
+                segment_text = segment.text.strip()
                 if not segment_text:
                     continue
                 normalized_text = self._preprocess_text(
@@ -134,7 +162,14 @@ class KokoroState:
                     apply_char_limit=False,
                 )
                 if normalized_text.strip():
-                    normalized_segments.append((segment_voice, normalized_text))
+                    normalized_segments.append(
+                        DialogueSegment(
+                            voice=segment.voice,
+                            text=normalized_text,
+                            style_preset=segment.style_preset,
+                            pause_seconds=segment.pause_seconds,
+                        )
+                    )
             if normalized_segments:
                 normalized_parts.append(normalized_segments)
         return normalized_parts
@@ -260,12 +295,15 @@ class KokoroState:
     ) -> tuple[tuple[int, object] | None, str]:
         if use_gpu is None:
             use_gpu = self.cuda_available
+        base_speed = speed
+        base_pause_seconds = pause_seconds
         style_preset, speed, pause_seconds = resolve_style_runtime(style_preset, speed, pause_seconds)
         parts = self._prepare_dialogue_parts(
             text,
             voice,
             normalize_times_enabled,
             normalize_numbers_enabled,
+            style_preset,
         )
         self.logger.debug(
             "Generate start: text_len=%s parts=%s voice=%s style=%s speed=%s use_gpu=%s pause_seconds=%s output_format=%s",
@@ -279,12 +317,11 @@ class KokoroState:
             output_format,
         )
         self._persist_morphology(parts, source="generate_first")
-        pause_samples = max(0, int(pause_seconds * SAMPLE_RATE))
-        pause_tensor = torch.zeros(pause_samples) if pause_samples else None
+        default_pause_samples = max(0, int(pause_seconds * SAMPLE_RATE))
         combined_segments: list[torch.Tensor] = []
         first_ps = ""
         output_format = self.audio_writer.resolve_output_format(output_format)
-        output_voice = summarize_voice(parts, voice)
+        output_voice = summarize_dialogue_voice(parts, voice)
         output_paths = (
             self.audio_writer.build_output_paths(output_voice, len(parts), output_format)
             if save_outputs
@@ -293,22 +330,33 @@ class KokoroState:
         saved_paths: list[str] = []
         for index, segments in enumerate(parts):
             part_segments: list[torch.Tensor] = []
-            for segment_index, (segment_voice, segment_text) in enumerate(segments):
+            last_segment_pause_seconds = pause_seconds
+            for segment_index, segment in enumerate(segments):
+                segment_style, segment_speed, segment_pause_seconds = resolve_style_runtime(
+                    segment.style_preset,
+                    base_speed,
+                    base_pause_seconds,
+                )
+                if segment.pause_seconds is not None:
+                    segment_pause_seconds = segment.pause_seconds
                 audio_tensor, part_ps = self._generate_audio_for_text(
-                    segment_text,
-                    segment_voice,
-                    speed,
-                    style_preset,
+                    segment.text,
+                    segment.voice,
+                    segment_speed,
+                    segment_style,
                     use_gpu,
-                    pause_seconds,
+                    segment_pause_seconds,
                 )
                 if audio_tensor is None:
                     continue
                 if not first_ps and part_ps:
                     first_ps = part_ps
                 part_segments.append(audio_tensor)
-                if pause_tensor is not None and segment_index < len(segments) - 1:
-                    part_segments.append(pause_tensor)
+                last_segment_pause_seconds = segment_pause_seconds
+                if segment_index < len(segments) - 1:
+                    segment_pause_samples = max(0, int(segment_pause_seconds * SAMPLE_RATE))
+                    if segment_pause_samples:
+                        part_segments.append(torch.zeros(segment_pause_samples))
             if not part_segments:
                 continue
             part_audio = torch.cat(part_segments)
@@ -324,8 +372,10 @@ class KokoroState:
                 except Exception:
                     self.logger.exception("Failed to save output: %s", output_path)
             combined_segments.append(part_audio)
-            if pause_tensor is not None and index < len(parts) - 1:
-                combined_segments.append(pause_tensor)
+            if index < len(parts) - 1:
+                part_pause_samples = max(0, int(last_segment_pause_seconds * SAMPLE_RATE))
+                if part_pause_samples:
+                    combined_segments.append(torch.zeros(part_pause_samples))
         if not combined_segments:
             self.logger.debug("Generate produced no segments")
             self.last_saved_paths = []
@@ -342,7 +392,7 @@ class KokoroState:
         self.logger.debug(
             "Generate complete: segments=%s pause_samples=%s audio_samples=%s",
             len(combined_segments),
-            pause_samples,
+            default_pause_samples,
             full_audio.numel(),
         )
         return (SAMPLE_RATE, full_audio.numpy()), first_ps
@@ -360,12 +410,15 @@ class KokoroState:
     ) -> Generator[tuple[int, object], None, None]:
         if use_gpu is None:
             use_gpu = self.cuda_available
+        base_speed = speed
+        base_pause_seconds = pause_seconds
         style_preset, speed, pause_seconds = resolve_style_runtime(style_preset, speed, pause_seconds)
         parts = self._prepare_dialogue_parts(
             text,
             voice,
             normalize_times_enabled,
             normalize_numbers_enabled,
+            style_preset,
         )
         self.logger.debug(
             "Stream start: text_len=%s parts=%s voice=%s style=%s speed=%s use_gpu=%s pause_seconds=%s",
@@ -380,20 +433,31 @@ class KokoroState:
         self._persist_morphology(parts, source="generate_all")
         use_gpu = use_gpu and self.cuda_available
         first = True
-        pause_samples = max(0, int(pause_seconds * SAMPLE_RATE))
-        pause_audio = torch.zeros(pause_samples).numpy() if pause_samples else None
+        default_pause_samples = max(0, int(pause_seconds * SAMPLE_RATE))
         segment_index = 0
         model_cpu = None
         if not use_gpu:
             model_cpu = self.model_manager.get_model(False)
-        keep_sentences = pause_seconds > 0
         with torch.inference_mode():
             for part_index, segments in enumerate(parts):
-                for segment_idx, (segment_voice, segment_text) in enumerate(segments):
+                for segment_idx, segment in enumerate(segments):
+                    segment_style, segment_speed, segment_pause_seconds = resolve_style_runtime(
+                        segment.style_preset,
+                        base_speed,
+                        base_pause_seconds,
+                    )
+                    if segment.pause_seconds is not None:
+                        segment_pause_seconds = segment.pause_seconds
+                    keep_sentences = segment_pause_seconds > 0
+                    segment_pause_samples = max(0, int(segment_pause_seconds * SAMPLE_RATE))
+                    pause_audio = (
+                        torch.zeros(segment_pause_samples).numpy() if segment_pause_samples else None
+                    )
+                    segment_voice = segment.voice
                     pipeline = self.model_manager.get_pipeline(segment_voice)
                     pack = self.model_manager.get_voice_pack(segment_voice)
                     sentences = smart_split(
-                        segment_text,
+                        segment.text,
                         self.max_chunk_chars,
                         keep_sentences=keep_sentences,
                     )
@@ -402,8 +466,8 @@ class KokoroState:
                             self._run_pipeline(
                                 sentence,
                                 segment_voice,
-                                speed,
-                                style_preset,
+                                segment_speed,
+                                segment_style,
                                 pipeline,
                             )
                         )
@@ -422,15 +486,19 @@ class KokoroState:
                             ref_s = pack[len(ps) - 1]
                             try:
                                 if use_gpu:
-                                    audio = self._forward_gpu(ps, ref_s, speed)
+                                    audio = self._forward_gpu(ps, ref_s, segment_speed)
                                 else:
-                                    audio = model_cpu(ps, ref_s, speed)
+                                    audio = model_cpu(ps, ref_s, segment_speed)
                             except Exception as exc:
                                 if self._is_ui_error(exc):
                                     if use_gpu and self.ui_hooks:
                                         self.ui_hooks.warn(str(exc))
                                         self.ui_hooks.info("Switching to CPU")
-                                        audio = self.model_manager.get_model(False)(ps, ref_s, speed)
+                                        audio = self.model_manager.get_model(False)(
+                                            ps,
+                                            ref_s,
+                                            segment_speed,
+                                        )
                                     else:
                                         raise self._raise_ui_error(exc)
                                 else:
@@ -450,5 +518,5 @@ class KokoroState:
         self.logger.debug(
             "Stream complete: segments=%s pause_samples=%s",
             segment_index,
-            pause_samples,
+            default_pause_samples,
         )

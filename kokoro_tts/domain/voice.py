@@ -1,8 +1,11 @@
 """Voice catalog and parsing helpers."""
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 import logging
 import re
+
+from .style import DEFAULT_STYLE_PRESET, STYLE_PRESETS, normalize_style_preset
 
 logger = logging.getLogger("kokoro_app")
 
@@ -10,8 +13,20 @@ VOICE_TAG_RE = re.compile(
     r"\[(?:voice|speaker|spk|mix|voice_mix)\s*=\s*([^\]]+?)\]",
     re.IGNORECASE,
 )
+DIALOGUE_TAG_RE = re.compile(
+    r"\[(voice|speaker|spk|mix|voice_mix|style|pause)\s*=\s*([^\]]+?)\]",
+    re.IGNORECASE,
+)
 
 DEFAULT_VOICE = "af_heart"
+
+
+@dataclass(frozen=True)
+class DialogueSegment:
+    voice: str
+    text: str
+    style_preset: str = DEFAULT_STYLE_PRESET
+    pause_seconds: float | None = None
 
 LANGUAGE_LABELS = {
     "a": "American English",
@@ -218,6 +233,86 @@ def normalize_voice_tag(raw_value: str, default_voice: str) -> str:
     return _normalize_voice_parts(parts, fallback_voice, unknown_label="voice tag")
 
 
+def normalize_style_tag(raw_value: str, current_style: str, default_style: str) -> str:
+    cleaned = str(raw_value or "").strip().strip('"').strip("'")
+    if not cleaned:
+        return current_style
+    lowered = cleaned.lower()
+    if lowered in ("default", "auto"):
+        return normalize_style_preset(default_style)
+    if lowered not in STYLE_PRESETS:
+        logger.warning('Unknown style tag "%s"; keeping "%s"', cleaned, current_style)
+        return current_style
+    return normalize_style_preset(lowered, default=current_style)
+
+
+def normalize_pause_tag(raw_value: str, current_pause_seconds: float | None) -> float | None:
+    cleaned = str(raw_value or "").strip().strip('"').strip("'")
+    if not cleaned:
+        return current_pause_seconds
+    lowered = cleaned.lower()
+    if lowered in ("default", "auto"):
+        return None
+    if lowered in ("off", "none"):
+        return 0.0
+    try:
+        if lowered.endswith("ms"):
+            value = float(lowered[:-2].strip()) / 1000.0
+        elif lowered.endswith("s"):
+            value = float(lowered[:-1].strip())
+        else:
+            value = float(lowered)
+    except ValueError:
+        logger.warning('Invalid pause tag "%s"; keeping current value', cleaned)
+        return current_pause_seconds
+    return max(0.0, value)
+
+
+def parse_dialogue_segments(
+    text: str,
+    default_voice: str,
+    default_style_preset: str = DEFAULT_STYLE_PRESET,
+) -> list[DialogueSegment]:
+    current_voice = _to_voice_id(default_voice) or DEFAULT_VOICE
+    base_style = normalize_style_preset(default_style_preset)
+    current_style = base_style
+    current_pause: float | None = None
+    segments: list[DialogueSegment] = []
+    last = 0
+    for match in DIALOGUE_TAG_RE.finditer(text):
+        start, end = match.span()
+        chunk = text[last:start]
+        if chunk.strip():
+            segments.append(
+                DialogueSegment(
+                    voice=current_voice,
+                    text=chunk.strip(),
+                    style_preset=current_style,
+                    pause_seconds=current_pause,
+                )
+            )
+        tag_name = match.group(1).strip().lower()
+        tag_value = match.group(2)
+        if tag_name in ("voice", "speaker", "spk", "mix", "voice_mix"):
+            current_voice = normalize_voice_tag(tag_value, current_voice)
+        elif tag_name == "style":
+            current_style = normalize_style_tag(tag_value, current_style, base_style)
+        elif tag_name == "pause":
+            current_pause = normalize_pause_tag(tag_value, current_pause)
+        last = end
+    tail = text[last:]
+    if tail.strip():
+        segments.append(
+            DialogueSegment(
+                voice=current_voice,
+                text=tail.strip(),
+                style_preset=current_style,
+                pause_seconds=current_pause,
+            )
+        )
+    return segments
+
+
 def parse_voice_segments(text: str, default_voice: str) -> list[tuple[str, str]]:
     current_voice = _to_voice_id(default_voice) or DEFAULT_VOICE
     segments: list[tuple[str, str]] = []
@@ -233,6 +328,37 @@ def parse_voice_segments(text: str, default_voice: str) -> list[tuple[str, str]]
     if tail.strip():
         segments.append((current_voice, tail.strip()))
     return segments
+
+
+def limit_dialogue_segment_parts(
+    parts: list[list[DialogueSegment]],
+    char_limit: int | None,
+) -> tuple[list[list[DialogueSegment]], bool]:
+    if char_limit is None:
+        return parts, False
+    remaining = char_limit
+    limited_parts: list[list[DialogueSegment]] = []
+    truncated = False
+    for segments in parts:
+        limited_segments: list[DialogueSegment] = []
+        for segment in segments:
+            text = segment.text.strip()
+            if not text:
+                continue
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(text) > remaining:
+                text = text[:remaining].rstrip()
+                truncated = True
+            if text:
+                limited_segments.append(replace(segment, text=text))
+                remaining -= len(text)
+        if limited_segments:
+            limited_parts.append(limited_segments)
+        if remaining <= 0:
+            break
+    return limited_parts, truncated
 
 
 def limit_dialogue_parts(
@@ -264,6 +390,15 @@ def limit_dialogue_parts(
         if remaining <= 0:
             break
     return limited_parts, truncated
+
+
+def summarize_dialogue_voice(parts: list[list[DialogueSegment]], default_voice: str) -> str:
+    voices = {segment.voice for segments in parts for segment in segments if segment.voice}
+    if not voices:
+        return _to_voice_id(default_voice) or DEFAULT_VOICE
+    if len(voices) == 1:
+        return next(iter(voices))
+    return "multi"
 
 
 def summarize_voice(parts: list[list[tuple[str, str]]], default_voice: str) -> str:

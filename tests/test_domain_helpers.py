@@ -7,15 +7,21 @@ from kokoro_tts.domain.text_utils import (
     _merge_spans,
 )
 from kokoro_tts.domain.voice import (
+    DialogueSegment,
     DEFAULT_VOICE,
     default_voice_for_lang,
     get_voice_choices,
     limit_dialogue_parts,
+    limit_dialogue_segment_parts,
     normalize_lang_code,
+    normalize_pause_tag,
+    normalize_style_tag,
     normalize_voice_input,
     normalize_voice_tag,
+    parse_dialogue_segments,
     parse_voice_segments,
     resolve_voice,
+    summarize_dialogue_voice,
     summarize_voice,
     voice_language,
 )
@@ -91,6 +97,31 @@ def test_voice_helpers_cover_language_mix_and_tags():
     assert parts == [("af_heart", "Hello"), ("am_michael", "World")]
     assert summarize_voice([parts], "af_bella") == "multi"
     assert summarize_voice([], "af_bella") == "af_bella"
+
+
+def test_dialogue_segments_support_style_and_pause_tags():
+    assert normalize_style_tag("default", "energetic", "narrator") == "narrator"
+    assert normalize_style_tag("unknown-style", "energetic", "narrator") == "energetic"
+    assert normalize_pause_tag("default", 0.5) is None
+    assert normalize_pause_tag("none", 0.5) == 0.0
+    assert normalize_pause_tag("250ms", None) == 0.25
+    assert normalize_pause_tag("bad-value", 0.5) == 0.5
+
+    segments = parse_dialogue_segments(
+        "[voice=af_heart][style=narrator]Hello [pause=250ms]world [style=energetic][pause=default]again",
+        "af_bella",
+        default_style_preset="neutral",
+    )
+    assert segments == [
+        DialogueSegment("af_heart", "Hello", "narrator", None),
+        DialogueSegment("af_heart", "world", "narrator", 0.25),
+        DialogueSegment("af_heart", "again", "energetic", None),
+    ]
+
+    limited, truncated = limit_dialogue_segment_parts([segments], char_limit=5)
+    assert truncated is True
+    assert limited == [[DialogueSegment("af_heart", "Hello", "narrator", None)]]
+    assert summarize_dialogue_voice([segments], "af_bella") == "af_heart"
 
 
 def test_limit_dialogue_parts_without_limit_returns_original():

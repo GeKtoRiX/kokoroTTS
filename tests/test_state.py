@@ -4,6 +4,7 @@ import torch
 from kokoro_tts.application.state import KokoroState
 from kokoro_tts.application.ui_hooks import UiHooks
 from kokoro_tts.domain.normalization import TextNormalizer
+from kokoro_tts.domain.voice import DialogueSegment
 
 
 class _Logger:
@@ -125,10 +126,11 @@ def test_tokenize_first_and_prepare_dialogue_parts():
         "af_heart",
         normalize_times_enabled=False,
         normalize_numbers_enabled=False,
+        default_style_preset="neutral",
     )
     assert parts == [
-        [("af_heart", "hello world")],
-        [("am_michael", "second part")],
+        [DialogueSegment("af_heart", "hello world", "neutral", None)],
+        [DialogueSegment("am_michael", "second part", "neutral", None)],
     ]
     assert state.tokenize_first("hello world", voice="af_heart") == "hello"
 
@@ -261,6 +263,27 @@ def test_generate_first_applies_style_preset_to_speed_and_pipeline():
     assert manager.pipeline.calls[0][3] == "narrator"
     assert manager.cpu_model.calls
     assert round(float(manager.cpu_model.calls[0][2]), 2) == 0.92
+
+
+def test_generate_first_applies_inline_style_and_pause_overrides():
+    state, manager, _, _ = _build_state()
+    (sample_rate, audio_np), _ = state.generate_first(
+        "[style=narrator][pause=0.001]hello [style=energetic][pause=0]world",
+        speed=1.0,
+        style_preset="neutral",
+        pause_seconds=0.5,
+        use_gpu=False,
+        save_outputs=False,
+    )
+
+    assert sample_rate == 24000
+    assert manager.pipeline.calls
+    assert manager.pipeline.calls[0][3] == "narrator"
+    assert manager.pipeline.calls[1][3] == "energetic"
+    assert manager.cpu_model.calls
+    assert round(float(manager.cpu_model.calls[0][2]), 2) == 0.92
+    assert round(float(manager.cpu_model.calls[1][2]), 2) == 1.12
+    assert len(audio_np) == 28
 
 
 def test_generate_first_falls_back_when_pipeline_has_no_style_argument():

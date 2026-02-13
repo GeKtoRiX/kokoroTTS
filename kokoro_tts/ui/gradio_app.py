@@ -31,6 +31,8 @@ TOKEN_NOTE = (
 
 DIALOGUE_NOTE = (
     "\nUse [voice=af_heart] to switch speakers inside the text.\n"
+    "Use [style=neutral|narrator|energetic] to switch style per segment.\n"
+    "Use [pause=0.35] (or [pause=350ms], [pause=default]) to control pauses per segment.\n"
     "Mix voices with commas: [voice=af_heart,am_michael].\n"
 )
 
@@ -151,7 +153,7 @@ def create_gradio_app(
                     info=(
                         f"Up to ~{config.max_chunk_chars} characters per chunk for Generate, "
                         f"or {stream_cap} characters per Stream. Use | to split into "
-                        "separate files. Use [voice=af_heart] to switch speakers."
+                        "separate files. Use [voice=af_heart], [style=narrator], [pause=0.3]."
                     ),
                 )
                 language = gr.Dropdown(
