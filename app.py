@@ -69,6 +69,7 @@ from kokoro_tts.integrations.spaces_gpu import build_forward_gpu
 from kokoro_tts.logging_config import setup_logging
 from kokoro_tts.storage.audio_writer import AudioWriter
 from kokoro_tts.storage.history_repository import HistoryRepository
+from kokoro_tts.storage.morphology_repository import MorphologyRepository
 from kokoro_tts.application.history_service import HistoryService
 from kokoro_tts.application.state import KokoroState
 from kokoro_tts.application.ui_hooks import UiHooks
@@ -96,7 +97,8 @@ logger.info("Log file: %s", CONFIG.log_file)
 logger.debug(
     "Log config: LOG_LEVEL=%s FILE_LOG_LEVEL=%s LOG_DIR=%s OUTPUT_DIR=%s REPO_ID=%s "
     "MAX_CHUNK_CHARS=%s HISTORY_LIMIT=%s NORMALIZE_TIMES=%s NORMALIZE_NUMBERS=%s "
-    "DEFAULT_OUTPUT_FORMAT=%s DEFAULT_CONCURRENCY_LIMIT=%s LOG_EVERY_N_SEGMENTS=%s",
+    "DEFAULT_OUTPUT_FORMAT=%s DEFAULT_CONCURRENCY_LIMIT=%s LOG_EVERY_N_SEGMENTS=%s "
+    "MORPH_DB_ENABLED=%s MORPH_DB_PATH=%s MORPH_DB_TABLE_PREFIX=%s",
     CONFIG.log_level,
     CONFIG.file_log_level,
     CONFIG.log_dir,
@@ -109,6 +111,9 @@ logger.debug(
     CONFIG.default_output_format,
     CONFIG.default_concurrency_limit,
     CONFIG.log_segment_every,
+    CONFIG.morph_db_enabled,
+    CONFIG.morph_db_path,
+    CONFIG.morph_db_table_prefix,
 )
 
 CUDA_AVAILABLE = torch.cuda.is_available()
@@ -146,6 +151,7 @@ TEXT_NORMALIZER = None
 AUDIO_WRITER = None
 HISTORY_REPOSITORY = None
 HISTORY_SERVICE = None
+MORPHOLOGY_REPOSITORY = None
 APP_STATE = None
 app = None
 API_OPEN = None
@@ -246,6 +252,22 @@ def generate_all(
     )
 
 
+def export_morphology_sheet(dataset: str = "lexemes"):
+    if MORPHOLOGY_REPOSITORY is None:
+        return None, "Morphology DB is not configured."
+    try:
+        sheet_path = MORPHOLOGY_REPOSITORY.export_spreadsheet(
+            dataset=dataset,
+            output_dir=CONFIG.output_dir_abs,
+        )
+    except Exception:
+        logger.exception("Morphology spreadsheet export failed")
+        return None, "Export failed. Check logs for details."
+    if not sheet_path:
+        return None, "No rows available for export."
+    return sheet_path, f"Export ready: {os.path.basename(sheet_path)}"
+
+
 if not SKIP_APP_INIT:
     MODEL_MANAGER = ModelManager(CONFIG.repo_id, CUDA_AVAILABLE, logger)
     TEXT_NORMALIZER = TextNormalizer(
@@ -254,6 +276,12 @@ if not SKIP_APP_INIT:
         CONFIG.normalize_numbers,
     )
     AUDIO_WRITER = AudioWriter(CONFIG.output_dir, SAMPLE_RATE, logger)
+    MORPHOLOGY_REPOSITORY = MorphologyRepository(
+        enabled=CONFIG.morph_db_enabled,
+        db_path=CONFIG.morph_db_path,
+        table_prefix=CONFIG.morph_db_table_prefix,
+        logger_instance=logger,
+    )
     forward_gpu = build_forward_gpu(MODEL_MANAGER)
     ui_hooks = UiHooks(
         warn=gr.Warning,
@@ -271,6 +299,7 @@ if not SKIP_APP_INIT:
         logger,
         gpu_forward=forward_gpu,
         ui_hooks=ui_hooks,
+        morphology_repository=MORPHOLOGY_REPOSITORY,
     )
     HISTORY_REPOSITORY = HistoryRepository(CONFIG.output_dir_abs, logger)
     HISTORY_SERVICE = HistoryService(
@@ -287,6 +316,7 @@ if not SKIP_APP_INIT:
         tokenize_first=tokenize_first,
         generate_all=generate_all,
         predict=predict,
+        export_morphology_sheet=export_morphology_sheet,
         history_service=HISTORY_SERVICE,
         choices=CHOICES,
     )

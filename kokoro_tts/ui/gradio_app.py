@@ -43,6 +43,7 @@ def create_gradio_app(
     tokenize_first,
     generate_all,
     predict,
+    export_morphology_sheet=None,
     history_service,
     choices,
 ) -> tuple[gr.Blocks, bool]:
@@ -59,6 +60,10 @@ def create_gradio_app(
     history_state = None
     history_audios: list[gr.Audio] = []
     clear_history_btn = None
+    export_csv_btn = None
+    export_csv_dataset = None
+    export_csv_file = None
+    export_csv_status = None
 
     with gr.Blocks(theme=APP_THEME) as generate_tab:
         out_audio = gr.Audio(label="Output Audio", interactive=False, streaming=False, autoplay=True)
@@ -80,6 +85,22 @@ def create_gradio_app(
             tokenize_btn = gr.Button("Tokenize", variant="secondary")
             gr.Markdown(TOKEN_NOTE)
             predict_btn = gr.Button("Predict", variant="secondary", visible=False)
+        if config.morph_db_enabled and callable(export_morphology_sheet):
+            with gr.Accordion("Morphology DB Export", open=False):
+                gr.Markdown("Download LibreOffice Calc spreadsheet (.ods).")
+                export_csv_dataset = gr.Dropdown(
+                    [
+                        ("Lexemes", "lexemes"),
+                        ("Token occurrences", "occurrences"),
+                        ("Expressions (phrasal verbs and idioms)", "expressions"),
+                        ("POS table (columns by part of speech)", "pos_table"),
+                    ],
+                    value="lexemes",
+                    label="Dataset",
+                )
+                export_csv_btn = gr.Button("Download ODS", variant="secondary")
+                export_csv_file = gr.File(label="ODS file", interactive=False)
+                export_csv_status = gr.Textbox(label="Export status", interactive=False)
 
     stream_note = [
         "⚠️ There is an unknown Gradio bug that might yield no audio the first time you click `Stream`."
@@ -294,6 +315,13 @@ def create_gradio_app(
             outputs=[out_audio],
             api_name=api_name,
         )
+        if export_csv_btn is not None:
+            export_csv_btn.click(
+                fn=export_morphology_sheet,
+                inputs=[export_csv_dataset],
+                outputs=[export_csv_file, export_csv_status],
+                api_name=False,
+            )
 
     logger.debug("UI wiring complete")
     return app, api_open

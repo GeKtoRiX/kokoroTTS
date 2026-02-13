@@ -28,6 +28,7 @@ class KokoroState:
         *,
         gpu_forward: Callable[[torch.Tensor, torch.Tensor, float], torch.Tensor] | None = None,
         ui_hooks: UiHooks | None = None,
+        morphology_repository=None,
     ) -> None:
         self.model_manager = model_manager
         self.normalizer = normalizer
@@ -38,7 +39,21 @@ class KokoroState:
         self.logger = logger
         self.gpu_forward = gpu_forward
         self.ui_hooks = ui_hooks
+        self.morphology_repository = morphology_repository
         self.last_saved_paths: list[str] = []
+
+    def _persist_morphology(
+        self,
+        parts: list[list[tuple[str, str]]],
+        *,
+        source: str,
+    ) -> None:
+        if self.morphology_repository is None:
+            return
+        try:
+            self.morphology_repository.ingest_dialogue_parts(parts, source=source)
+        except Exception:
+            self.logger.exception("Morphology DB write failed")
 
     def tokenize_first(
         self,
@@ -213,6 +228,7 @@ class KokoroState:
             pause_seconds,
             output_format,
         )
+        self._persist_morphology(parts, source="generate_first")
         pause_samples = max(0, int(pause_seconds * SAMPLE_RATE))
         pause_tensor = torch.zeros(pause_samples) if pause_samples else None
         combined_segments: list[torch.Tensor] = []
@@ -307,6 +323,7 @@ class KokoroState:
             use_gpu,
             pause_seconds,
         )
+        self._persist_morphology(parts, source="generate_all")
         use_gpu = use_gpu and self.cuda_available
         first = True
         pause_samples = max(0, int(pause_seconds * SAMPLE_RATE))

@@ -13,6 +13,8 @@ from .normalization import (
     ordinalize_words,
     time_to_words,
 )
+from .morphology import analyze_english_text
+from .expressions import extract_english_expressions
 from .splitting import smart_split, split_parts, split_sentences
 from .voice import (
     CHOICES,
@@ -41,6 +43,8 @@ __all__ = [
     "digits_to_words",
     "get_voice_choices",
     "limit_dialogue_parts",
+    "analyze_english_text",
+    "extract_english_expressions",
     "normalize_lang_code",
     "normalize_numbers",
     "normalize_times",

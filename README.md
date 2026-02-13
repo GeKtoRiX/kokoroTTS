@@ -63,6 +63,20 @@ Create/edit `.env` (or start from `.env.example`):
 - `LOG_LEVEL`, `FILE_LOG_LEVEL`, `LOG_DIR`
 - `LOG_EVERY_N_SEGMENTS`
 - `UI_PRIMARY_HUE`
+- `MORPH_DB_ENABLED`, `MORPH_DB_PATH`, `MORPH_DB_TABLE_PREFIX`
+- `WORDNET_DATA_DIR`, `WORDNET_AUTO_DOWNLOAD`, `SPACY_EN_MODEL_AUTO_DOWNLOAD`
+
+When `MORPH_DB_ENABLED=1`, each `generate` run writes English token analysis into SQLite:
+- `<prefix>lexemes` (deduplicated by key, insert-ignore only)
+- `<prefix>token_occurrences` (token occurrences, insert-ignore only)
+- `<prefix>expressions` (phrasal verbs and idioms)
+
+UI includes a `Morphology DB Export` accordion with `Download ODS` for `lexemes`, `token_occurrences`, `expressions`, or `POS table` (LibreOffice Calc native format).
+`POS table` export uses columns by parts of speech (Noun, Verb, Adjective, etc.) and rows with words.
+
+Expression detection uses:
+- spaCy `DependencyMatcher` for verb + particle phrasal verbs (lemma-based)
+- WordNet-powered phrase matching for idioms (WordNet is downloaded locally to `WORDNET_DATA_DIR`)
 
 `run.bat` auto-loads `.env` and auto-detects local tools under `tools/` when variables are not set.
 

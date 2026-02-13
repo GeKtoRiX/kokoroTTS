@@ -26,6 +26,9 @@ class AppConfig:
     default_output_format: str
     default_concurrency_limit: Optional[int]
     log_segment_every: int
+    morph_db_enabled: bool
+    morph_db_path: str
+    morph_db_table_prefix: str
     space_id: str
     is_duplicate: bool
     char_limit: Optional[int]
@@ -64,6 +67,17 @@ def load_config() -> AppConfig:
     log_segment_every = parse_int_env(
         "LOG_EVERY_N_SEGMENTS", 10, min_value=1, max_value=1000
     )
+    morph_db_enabled = os.getenv("MORPH_DB_ENABLED", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    morph_db_path = resolve_path(
+        os.getenv("MORPH_DB_PATH", "data/morphology.sqlite3").strip(),
+        base_dir,
+    )
+    morph_db_table_prefix = os.getenv("MORPH_DB_TABLE_PREFIX", "morph_").strip()
     space_id = os.getenv("SPACE_ID", "")
     is_duplicate = not space_id.startswith("hexgrad/")
     char_limit = None if is_duplicate else 5000
@@ -82,6 +96,9 @@ def load_config() -> AppConfig:
         default_output_format=default_output_format,
         default_concurrency_limit=default_concurrency_limit,
         log_segment_every=log_segment_every,
+        morph_db_enabled=morph_db_enabled,
+        morph_db_path=morph_db_path,
+        morph_db_table_prefix=morph_db_table_prefix,
         space_id=space_id,
         is_duplicate=is_duplicate,
         char_limit=char_limit,
