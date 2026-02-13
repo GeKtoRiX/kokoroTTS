@@ -1,4 +1,5 @@
 from kokoro_tts.domain.splitting import _is_abbrev, _split_long_piece, smart_split, split_parts, split_sentences
+from kokoro_tts.domain.style import normalize_style_preset, resolve_style_runtime
 from kokoro_tts.domain.text_utils import (
     _apply_outside_spans,
     _find_skip_spans,
@@ -97,3 +98,13 @@ def test_limit_dialogue_parts_without_limit_returns_original():
     limited, truncated = limit_dialogue_parts(parts, char_limit=None)
     assert limited == parts
     assert truncated is False
+
+
+def test_style_presets_normalize_and_adjust_runtime():
+    assert normalize_style_preset("Narrator") == "narrator"
+    assert normalize_style_preset("unknown") == "neutral"
+
+    preset, speed, pause = resolve_style_runtime("energetic", speed=1.0, pause_seconds=1.0)
+    assert preset == "energetic"
+    assert round(speed, 2) == 1.12
+    assert round(pause, 2) == 0.8

@@ -7,6 +7,7 @@ import gradio as gr
 
 from ..config import AppConfig
 from ..constants import OUTPUT_FORMATS
+from ..domain.style import DEFAULT_STYLE_PRESET, STYLE_PRESET_CHOICES
 from ..domain.voice import (
     DEFAULT_VOICE,
     LANGUAGE_CHOICES,
@@ -44,6 +45,10 @@ def create_gradio_app(
     generate_all,
     predict,
     export_morphology_sheet=None,
+    load_pronunciation_rules=None,
+    apply_pronunciation_rules=None,
+    import_pronunciation_rules=None,
+    export_pronunciation_rules=None,
     history_service,
     choices,
 ) -> tuple[gr.Blocks, bool]:
@@ -72,6 +77,15 @@ def create_gradio_app(
     out_stream = None
     stream_btn = None
     stop_btn = None
+    style_preset = None
+    pronunciation_rules_json = None
+    pronunciation_status = None
+    pronunciation_load_btn = None
+    pronunciation_apply_btn = None
+    pronunciation_import_file = None
+    pronunciation_import_btn = None
+    pronunciation_export_btn = None
+    pronunciation_export_file = None
 
     stream_note = [
         "⚠️ There is an unknown Gradio bug that might yield no audio the first time you click `Stream`."
@@ -171,6 +185,15 @@ def create_gradio_app(
                         interactive=cuda_available,
                     )
                 speed = gr.Slider(minimum=0.5, maximum=2, value=1, step=0.1, label="Speed")
+                style_preset = gr.Dropdown(
+                    STYLE_PRESET_CHOICES,
+                    value=DEFAULT_STYLE_PRESET,
+                    label="Style preset",
+                    info=(
+                        "Kokoro has no native emotion controls. Presets tune runtime speed/pause "
+                        "and pass style to the pipeline only if supported."
+                    ),
+                )
                 pause_between = gr.Slider(
                     minimum=0,
                     maximum=2,
@@ -196,6 +219,54 @@ def create_gradio_app(
                     )
                 with gr.Accordion("Dialog tags", open=False):
                     gr.Markdown(DIALOGUE_NOTE)
+                with gr.Accordion("Pronunciation dictionary", open=False):
+                    gr.Markdown(
+                        "Persistent JSON rules by language code (`a,b,e,f,h,i,j,p,z`). "
+                        "Example: `{ \"a\": { \"OpenAI\": \"oʊpənˈeɪ aɪ\" } }`"
+                    )
+                    pronunciation_rules_json = gr.Textbox(
+                        label="Rules JSON",
+                        value="{}",
+                        lines=12,
+                    )
+                    pronunciation_status = gr.Textbox(
+                        label="Dictionary status",
+                        interactive=False,
+                    )
+                    with gr.Row():
+                        pronunciation_load_btn = gr.Button(
+                            "Load current",
+                            variant="secondary",
+                            interactive=callable(load_pronunciation_rules),
+                        )
+                        pronunciation_apply_btn = gr.Button(
+                            "Apply",
+                            variant="primary",
+                            interactive=callable(apply_pronunciation_rules),
+                        )
+                    with gr.Row(equal_height=True):
+                        pronunciation_import_file = gr.File(
+                            label="Import JSON",
+                            file_types=[".json"],
+                            type="filepath",
+                            height=160,
+                        )
+                        pronunciation_export_file = gr.File(
+                            label="Exported file",
+                            interactive=False,
+                            height=160,
+                        )
+                    with gr.Row(equal_height=True):
+                        pronunciation_import_btn = gr.Button(
+                            "Import file",
+                            variant="secondary",
+                            interactive=callable(import_pronunciation_rules),
+                        )
+                        pronunciation_export_btn = gr.Button(
+                            "Export JSON",
+                            variant="secondary",
+                            interactive=callable(export_pronunciation_rules),
+                        )
             with gr.Column():
                 with gr.Tabs():
                     with gr.Tab("Generate"):
@@ -278,6 +349,7 @@ def create_gradio_app(
                 output_format,
                 normalize_times_toggle,
                 normalize_numbers_toggle,
+                style_preset,
             ],
             outputs=[out_audio, out_ps],
             api_name=api_name,
@@ -303,6 +375,7 @@ def create_gradio_app(
                 speed,
                 normalize_times_toggle,
                 normalize_numbers_toggle,
+                style_preset,
             ],
             outputs=[out_ps],
             api_name=api_name,
@@ -325,6 +398,7 @@ def create_gradio_app(
                 pause_between,
                 normalize_times_toggle,
                 normalize_numbers_toggle,
+                style_preset,
             ],
             outputs=[out_stream],
             api_name=api_name,
@@ -346,6 +420,7 @@ def create_gradio_app(
                 speed,
                 normalize_times_toggle,
                 normalize_numbers_toggle,
+                style_preset,
             ],
             outputs=[out_audio],
             api_name=api_name,
@@ -355,6 +430,32 @@ def create_gradio_app(
                 fn=export_morphology_sheet,
                 inputs=[export_csv_dataset],
                 outputs=[export_csv_file, export_csv_status],
+                api_name=False,
+            )
+        if callable(load_pronunciation_rules):
+            pronunciation_load_btn.click(
+                fn=load_pronunciation_rules,
+                outputs=[pronunciation_rules_json, pronunciation_status],
+                api_name=False,
+            )
+        if callable(apply_pronunciation_rules):
+            pronunciation_apply_btn.click(
+                fn=apply_pronunciation_rules,
+                inputs=[pronunciation_rules_json],
+                outputs=[pronunciation_rules_json, pronunciation_status],
+                api_name=False,
+            )
+        if callable(import_pronunciation_rules):
+            pronunciation_import_btn.click(
+                fn=import_pronunciation_rules,
+                inputs=[pronunciation_import_file],
+                outputs=[pronunciation_rules_json, pronunciation_status],
+                api_name=False,
+            )
+        if callable(export_pronunciation_rules):
+            pronunciation_export_btn.click(
+                fn=export_pronunciation_rules,
+                outputs=[pronunciation_export_file, pronunciation_status],
                 api_name=False,
             )
 

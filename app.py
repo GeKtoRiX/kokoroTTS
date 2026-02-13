@@ -5,6 +5,7 @@ import inspect
 import os
 import platform
 import sys
+from datetime import datetime
 
 import gradio as gr
 import spaces
@@ -70,6 +71,7 @@ from kokoro_tts.logging_config import setup_logging
 from kokoro_tts.storage.audio_writer import AudioWriter
 from kokoro_tts.storage.history_repository import HistoryRepository
 from kokoro_tts.storage.morphology_repository import MorphologyRepository
+from kokoro_tts.storage.pronunciation_repository import PronunciationRepository
 from kokoro_tts.application.history_service import HistoryService
 from kokoro_tts.application.state import KokoroState
 from kokoro_tts.application.ui_hooks import UiHooks
@@ -91,6 +93,12 @@ SKIP_APP_INIT = os.getenv("KOKORO_SKIP_APP_INIT", "").strip().lower() in (
 
 BASE_DIR = os.path.dirname(__file__)
 configure_ffmpeg(logger, BASE_DIR)
+PRONUNCIATION_RULES_PATH = os.path.abspath(
+    os.path.join(
+        BASE_DIR,
+        os.getenv("PRONUNCIATION_RULES_PATH", "data/pronunciation_rules.json").strip(),
+    )
+)
 
 logger.info("Starting app")
 logger.info("Log file: %s", CONFIG.log_file)
@@ -152,10 +160,125 @@ AUDIO_WRITER = None
 HISTORY_REPOSITORY = None
 HISTORY_SERVICE = None
 MORPHOLOGY_REPOSITORY = None
+PRONUNCIATION_REPOSITORY = None
 APP_STATE = None
 app = None
 API_OPEN = None
 SSR_MODE = os.getenv("KOKORO_SSR_MODE", "").strip().lower() in ("1", "true", "yes")
+
+
+def _model_manager_instance():
+    if MODEL_MANAGER is not None:
+        return MODEL_MANAGER
+    if APP_STATE is not None:
+        return getattr(APP_STATE, "model_manager", None)
+    return None
+
+
+def _refresh_pronunciation_rules_from_store() -> None:
+    model_manager = _model_manager_instance()
+    if model_manager is None or PRONUNCIATION_REPOSITORY is None:
+        return
+    rules = PRONUNCIATION_REPOSITORY.load_rules()
+    model_manager.set_pronunciation_rules(rules)
+
+
+def _save_and_apply_pronunciation_rules(
+    rules: dict[str, dict[str, str]]
+) -> tuple[dict[str, dict[str, str]], int]:
+    if PRONUNCIATION_REPOSITORY is None:
+        raise RuntimeError("Pronunciation dictionary is not configured.")
+    model_manager = _model_manager_instance()
+    if model_manager is None:
+        raise RuntimeError("Model manager is not initialized.")
+    saved_rules = PRONUNCIATION_REPOSITORY.save_rules(rules)
+    entry_count = model_manager.set_pronunciation_rules(saved_rules)
+    return saved_rules, entry_count
+
+
+def _resolve_uploaded_file_path(uploaded_file) -> str:
+    if uploaded_file is None:
+        return ""
+    if isinstance(uploaded_file, str):
+        return uploaded_file
+    if isinstance(uploaded_file, (list, tuple)):
+        return _resolve_uploaded_file_path(uploaded_file[0]) if uploaded_file else ""
+    if isinstance(uploaded_file, dict):
+        return str(uploaded_file.get("path") or uploaded_file.get("name") or "").strip()
+    return str(uploaded_file).strip()
+
+
+def load_pronunciation_rules_json():
+    if PRONUNCIATION_REPOSITORY is None:
+        return "{}", "Pronunciation dictionary is not configured."
+    model_manager = _model_manager_instance()
+    if model_manager is None:
+        return "{}", "Model manager is not initialized."
+    rules = PRONUNCIATION_REPOSITORY.load_rules()
+    entry_count = model_manager.set_pronunciation_rules(rules)
+    return (
+        PRONUNCIATION_REPOSITORY.to_pretty_json(rules),
+        f"Loaded {entry_count} rule(s) across {len(rules)} language(s).",
+    )
+
+
+def apply_pronunciation_rules_json(raw_json):
+    if PRONUNCIATION_REPOSITORY is None:
+        return "{}", "Pronunciation dictionary is not configured."
+    try:
+        parsed_rules = PRONUNCIATION_REPOSITORY.parse_rules_json(raw_json)
+        saved_rules, entry_count = _save_and_apply_pronunciation_rules(parsed_rules)
+    except ValueError as exc:
+        return str(raw_json or "{}"), f"Invalid dictionary JSON: {exc}"
+    except Exception:
+        logger.exception("Failed to apply pronunciation dictionary")
+        return str(raw_json or "{}"), "Failed to apply dictionary. Check logs for details."
+    return (
+        PRONUNCIATION_REPOSITORY.to_pretty_json(saved_rules),
+        f"Applied {entry_count} rule(s) across {len(saved_rules)} language(s).",
+    )
+
+
+def import_pronunciation_rules_json(uploaded_file):
+    if PRONUNCIATION_REPOSITORY is None:
+        return "{}", "Pronunciation dictionary is not configured."
+    file_path = _resolve_uploaded_file_path(uploaded_file)
+    if not file_path:
+        return "{}", "No JSON file selected."
+    try:
+        parsed_rules = PRONUNCIATION_REPOSITORY.load_rules_from_file(file_path)
+        saved_rules, entry_count = _save_and_apply_pronunciation_rules(parsed_rules)
+    except ValueError as exc:
+        return "{}", str(exc)
+    except Exception:
+        logger.exception("Failed to import pronunciation dictionary: %s", file_path)
+        return "{}", "Failed to import dictionary. Check logs for details."
+    return (
+        PRONUNCIATION_REPOSITORY.to_pretty_json(saved_rules),
+        f"Imported {entry_count} rule(s) across {len(saved_rules)} language(s).",
+    )
+
+
+def export_pronunciation_rules_json():
+    if PRONUNCIATION_REPOSITORY is None:
+        return None, "Pronunciation dictionary is not configured."
+    try:
+        rules = PRONUNCIATION_REPOSITORY.load_rules()
+        json_text = PRONUNCIATION_REPOSITORY.to_pretty_json(rules)
+        date_dir = os.path.join(
+            CONFIG.output_dir_abs,
+            datetime.now().strftime("%Y-%m-%d"),
+            "vocabulary",
+        )
+        os.makedirs(date_dir, exist_ok=True)
+        filename = f"pronunciation_rules_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        output_path = os.path.join(date_dir, filename)
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write(json_text)
+    except Exception:
+        logger.exception("Pronunciation dictionary export failed")
+        return None, "Export failed. Check logs for details."
+    return output_path, f"Export ready: {filename}"
 
 
 @spaces.GPU(duration=30)
@@ -174,7 +297,9 @@ def generate_first(
     output_format="wav",
     normalize_times_enabled=None,
     normalize_numbers_enabled=None,
+    style_preset="neutral",
 ):
+    _refresh_pronunciation_rules_from_store()
     voice = resolve_voice(voice, voice_mix, mix_enabled)
     return APP_STATE.generate_first(
         text=text,
@@ -185,6 +310,7 @@ def generate_first(
         output_format=output_format,
         normalize_times_enabled=normalize_times_enabled,
         normalize_numbers_enabled=normalize_numbers_enabled,
+        style_preset=style_preset,
     )
 
 
@@ -197,7 +323,9 @@ def predict(
     speed=1,
     normalize_times_enabled=None,
     normalize_numbers_enabled=None,
+    style_preset="neutral",
 ):
+    _refresh_pronunciation_rules_from_store()
     voice = resolve_voice(voice, voice_mix, mix_enabled)
     return APP_STATE.generate_first(
         text=text,
@@ -207,6 +335,7 @@ def predict(
         normalize_times_enabled=normalize_times_enabled,
         normalize_numbers_enabled=normalize_numbers_enabled,
         save_outputs=False,
+        style_preset=style_preset,
     )[0]
 
 
@@ -218,7 +347,9 @@ def tokenize_first(
     speed=1,
     normalize_times_enabled=None,
     normalize_numbers_enabled=None,
+    style_preset="neutral",
 ):
+    _refresh_pronunciation_rules_from_store()
     voice = resolve_voice(voice, voice_mix, mix_enabled)
     return APP_STATE.tokenize_first(
         text=text,
@@ -226,6 +357,7 @@ def tokenize_first(
         speed=speed,
         normalize_times_enabled=normalize_times_enabled,
         normalize_numbers_enabled=normalize_numbers_enabled,
+        style_preset=style_preset,
     )
 
 
@@ -239,7 +371,9 @@ def generate_all(
     pause_seconds=0.0,
     normalize_times_enabled=None,
     normalize_numbers_enabled=None,
+    style_preset="neutral",
 ):
+    _refresh_pronunciation_rules_from_store()
     voice = resolve_voice(voice, voice_mix, mix_enabled)
     yield from APP_STATE.generate_all(
         text=text,
@@ -249,6 +383,7 @@ def generate_all(
         pause_seconds=pause_seconds,
         normalize_times_enabled=normalize_times_enabled,
         normalize_numbers_enabled=normalize_numbers_enabled,
+        style_preset=style_preset,
     )
 
 
@@ -269,7 +404,23 @@ def export_morphology_sheet(dataset: str = "lexemes"):
 
 
 if not SKIP_APP_INIT:
-    MODEL_MANAGER = ModelManager(CONFIG.repo_id, CUDA_AVAILABLE, logger)
+    PRONUNCIATION_REPOSITORY = PronunciationRepository(
+        PRONUNCIATION_RULES_PATH,
+        logger_instance=logger,
+    )
+    pronunciation_rules = PRONUNCIATION_REPOSITORY.load_rules()
+    logger.info(
+        "Pronunciation dictionary path: %s (languages=%s entries=%s)",
+        PRONUNCIATION_RULES_PATH,
+        len(pronunciation_rules),
+        sum(len(entries) for entries in pronunciation_rules.values()),
+    )
+    MODEL_MANAGER = ModelManager(
+        CONFIG.repo_id,
+        CUDA_AVAILABLE,
+        logger,
+        pronunciation_rules=pronunciation_rules,
+    )
     TEXT_NORMALIZER = TextNormalizer(
         CONFIG.char_limit,
         CONFIG.normalize_times,
@@ -317,6 +468,10 @@ if not SKIP_APP_INIT:
         generate_all=generate_all,
         predict=predict,
         export_morphology_sheet=export_morphology_sheet,
+        load_pronunciation_rules=load_pronunciation_rules_json,
+        apply_pronunciation_rules=apply_pronunciation_rules_json,
+        import_pronunciation_rules=import_pronunciation_rules_json,
+        export_pronunciation_rules=export_pronunciation_rules_json,
         history_service=HISTORY_SERVICE,
         choices=CHOICES,
     )

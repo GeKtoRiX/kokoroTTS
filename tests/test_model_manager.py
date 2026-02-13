@@ -146,3 +146,51 @@ def test_model_manager_voice_pack_failure(monkeypatch):
         assert "voice load failed" in str(exc)
     else:
         raise AssertionError("Expected voice load failure")
+
+
+def test_model_manager_applies_and_refreshes_pronunciation_rules(monkeypatch):
+    class FakeModel:
+        def __init__(self, repo_id):
+            self.repo_id = repo_id
+
+        def to(self, _device):
+            return self
+
+        def eval(self):
+            return self
+
+    class FakeLexicon:
+        def __init__(self):
+            self.golds = {}
+
+    class FakeG2P:
+        def __init__(self):
+            self.lexicon = FakeLexicon()
+
+    class FakePipeline:
+        def __init__(self, lang_code, repo_id, model):
+            _ = (lang_code, repo_id, model)
+            self.g2p = FakeG2P()
+
+        def load_voice(self, voice):
+            return {"voice": voice}
+
+    monkeypatch.setattr("kokoro_tts.integrations.model_manager.KModel", FakeModel)
+    monkeypatch.setattr("kokoro_tts.integrations.model_manager.KPipeline", FakePipeline)
+
+    manager = ModelManager(
+        repo_id="repo/x",
+        cuda_available=True,
+        logger=_Logger(),
+        pronunciation_rules={"a": {"OpenAI": "oʊpənˈeɪ aɪ"}},
+    )
+
+    pipeline = manager.get_pipeline("af_heart")
+    assert pipeline.g2p.lexicon.golds["OpenAI"] == "oʊpənˈeɪ aɪ"
+    assert pipeline.g2p.lexicon.golds["openai"] == "oʊpənˈeɪ aɪ"
+
+    manager.set_pronunciation_rules({"a": {"Kokoro": "kˈOkəɹO"}})
+    assert "OpenAI" not in pipeline.g2p.lexicon.golds
+    assert "openai" not in pipeline.g2p.lexicon.golds
+    assert pipeline.g2p.lexicon.golds["Kokoro"] == "kˈOkəɹO"
+    assert pipeline.g2p.lexicon.golds["kokoro"] == "kˈOkəɹO"

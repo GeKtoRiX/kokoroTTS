@@ -31,8 +31,11 @@ class _Pack:
 
 
 class _Pipeline:
-    def __call__(self, text, voice, speed):
-        _ = (voice, speed)
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, text, voice, speed, style_preset=None):
+        self.calls.append((text, voice, speed, style_preset))
         for word in text.split():
             yield None, word, None
 
@@ -50,10 +53,10 @@ class _Model:
 
 
 class _ModelManager:
-    def __init__(self):
+    def __init__(self, pipeline=None):
         self.cpu_model = _Model()
         self.gpu_model = _Model()
-        self.pipeline = _Pipeline()
+        self.pipeline = pipeline or _Pipeline()
         self.pack = _Pack()
 
     def get_model(self, use_gpu):
@@ -95,8 +98,8 @@ class _MorphRepo:
         self.rows.append((parts, source))
 
 
-def _build_state(*, hooks=None, morph_repo=None, gpu_forward=None):
-    model_manager = _ModelManager()
+def _build_state(*, hooks=None, morph_repo=None, gpu_forward=None, pipeline=None):
+    model_manager = _ModelManager(pipeline=pipeline)
     normalizer = TextNormalizer(char_limit=80, normalize_times=False, normalize_numbers=False)
     audio_writer = _AudioWriter()
     logger = _Logger()
@@ -197,6 +200,7 @@ def test_generate_audio_ui_error_fallbacks_to_cpu():
         "hello",
         "af_heart",
         speed=1.0,
+        style_preset="neutral",
         use_gpu=True,
         pause_seconds=0.0,
     )
@@ -225,6 +229,7 @@ def test_generate_audio_ui_error_without_gpu_raises_wrapped_error():
             "hello",
             "af_heart",
             speed=1.0,
+            style_preset="neutral",
             use_gpu=False,
             pause_seconds=0.0,
         )
@@ -239,3 +244,46 @@ def test_morphology_persist_errors_are_caught():
     result, _ = state.generate_first("hello", save_outputs=False, use_gpu=False)
     assert result is not None
     assert logger.exceptions
+
+
+def test_generate_first_applies_style_preset_to_speed_and_pipeline():
+    state, manager, _, _ = _build_state()
+    state.generate_first(
+        "hello world",
+        speed=1.0,
+        style_preset="narrator",
+        use_gpu=False,
+        pause_seconds=1.0,
+        save_outputs=False,
+    )
+
+    assert manager.pipeline.calls
+    assert manager.pipeline.calls[0][3] == "narrator"
+    assert manager.cpu_model.calls
+    assert round(float(manager.cpu_model.calls[0][2]), 2) == 0.92
+
+
+def test_generate_first_falls_back_when_pipeline_has_no_style_argument():
+    class _PipelineNoStyle:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, text, voice, speed):
+            self.calls.append((text, voice, speed))
+            for word in text.split():
+                yield None, word, None
+
+    pipeline = _PipelineNoStyle()
+    state, manager, _, _ = _build_state(pipeline=pipeline)
+    state.generate_first(
+        "hello",
+        speed=1.0,
+        style_preset="energetic",
+        use_gpu=False,
+        save_outputs=False,
+    )
+
+    assert pipeline.calls
+    assert len(pipeline.calls[0]) == 3
+    assert manager.cpu_model.calls
+    assert round(float(manager.cpu_model.calls[0][2]), 2) == 1.12

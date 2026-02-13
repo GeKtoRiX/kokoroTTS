@@ -1,6 +1,7 @@
 """Application state and orchestration for audio generation."""
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Callable, Generator
 
@@ -8,6 +9,7 @@ import torch
 
 from ..constants import SAMPLE_RATE
 from ..domain.splitting import smart_split, split_parts
+from ..domain.style import PIPELINE_STYLE_PARAM_NAMES, resolve_style_runtime
 from ..domain.voice import limit_dialogue_parts, parse_voice_segments, summarize_voice
 from ..integrations.model_manager import ModelManager
 from ..storage.audio_writer import AudioWriter
@@ -41,6 +43,7 @@ class KokoroState:
         self.ui_hooks = ui_hooks
         self.morphology_repository = morphology_repository
         self.last_saved_paths: list[str] = []
+        self._pipeline_style_param_cache: dict[type, str | None] = {}
 
     def _persist_morphology(
         self,
@@ -62,7 +65,9 @@ class KokoroState:
         speed: float = 1,
         normalize_times_enabled: bool | None = None,
         normalize_numbers_enabled: bool | None = None,
+        style_preset: str = "neutral",
     ) -> str:
+        style_preset, speed, _ = resolve_style_runtime(style_preset, speed, 0.0)
         parts = self._prepare_dialogue_parts(
             text,
             voice,
@@ -73,7 +78,7 @@ class KokoroState:
             return ""
         first_voice, first_text = parts[0][0]
         pipeline = self.model_manager.get_pipeline(first_voice)
-        for _, ps, _ in pipeline(first_text, first_voice, speed):
+        for _, ps, _ in self._run_pipeline(first_text, first_voice, speed, style_preset, pipeline):
             return ps
         return ""
 
@@ -134,6 +139,47 @@ class KokoroState:
                 normalized_parts.append(normalized_segments)
         return normalized_parts
 
+    def _pipeline_style_param_name(self, pipeline) -> str | None:
+        pipeline_type = type(pipeline)
+        if pipeline_type in self._pipeline_style_param_cache:
+            return self._pipeline_style_param_cache[pipeline_type]
+        param_name = None
+        try:
+            parameters = inspect.signature(pipeline.__call__).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        for candidate in PIPELINE_STYLE_PARAM_NAMES:
+            if candidate in parameters:
+                param_name = candidate
+                break
+        self._pipeline_style_param_cache[pipeline_type] = param_name
+        return param_name
+
+    def _run_pipeline(
+        self,
+        text: str,
+        voice: str,
+        speed: float,
+        style_preset: str,
+        pipeline,
+    ):
+        style_param_name = self._pipeline_style_param_name(pipeline)
+        if style_param_name is None:
+            return pipeline(text, voice, speed)
+        kwargs = {style_param_name: style_preset}
+        try:
+            return pipeline(text, voice, speed, **kwargs)
+        except TypeError as exc:
+            message = str(exc)
+            if "unexpected keyword argument" in message:
+                self._pipeline_style_param_cache[type(pipeline)] = None
+                self.logger.debug(
+                    "Pipeline style argument %s is unsupported at runtime; retrying without style",
+                    style_param_name,
+                )
+                return pipeline(text, voice, speed)
+            raise
+
     def _forward_gpu(self, ps: torch.Tensor, ref_s: torch.Tensor, speed: float) -> torch.Tensor:
         if self.gpu_forward is None:
             return self.model_manager.get_model(True)(ps, ref_s, speed)
@@ -152,6 +198,7 @@ class KokoroState:
         text: str,
         voice: str,
         speed: float,
+        style_preset: str,
         use_gpu: bool,
         pause_seconds: float,
     ) -> tuple[torch.Tensor | None, str]:
@@ -169,7 +216,7 @@ class KokoroState:
             model_cpu = self.model_manager.get_model(False)
         with torch.inference_mode():
             for index, sentence in enumerate(sentences):
-                for _, ps, _ in pipeline(sentence, voice, speed):
+                for _, ps, _ in self._run_pipeline(sentence, voice, speed, style_preset, pipeline):
                     if not first_ps:
                         first_ps = ps
                     ref_s = pack[len(ps) - 1]
@@ -209,9 +256,11 @@ class KokoroState:
         normalize_times_enabled: bool | None = None,
         normalize_numbers_enabled: bool | None = None,
         save_outputs: bool = True,
+        style_preset: str = "neutral",
     ) -> tuple[tuple[int, object] | None, str]:
         if use_gpu is None:
             use_gpu = self.cuda_available
+        style_preset, speed, pause_seconds = resolve_style_runtime(style_preset, speed, pause_seconds)
         parts = self._prepare_dialogue_parts(
             text,
             voice,
@@ -219,10 +268,11 @@ class KokoroState:
             normalize_numbers_enabled,
         )
         self.logger.debug(
-            "Generate start: text_len=%s parts=%s voice=%s speed=%s use_gpu=%s pause_seconds=%s output_format=%s",
+            "Generate start: text_len=%s parts=%s voice=%s style=%s speed=%s use_gpu=%s pause_seconds=%s output_format=%s",
             len(text),
             len(parts),
             voice,
+            style_preset,
             speed,
             use_gpu,
             pause_seconds,
@@ -248,6 +298,7 @@ class KokoroState:
                     segment_text,
                     segment_voice,
                     speed,
+                    style_preset,
                     use_gpu,
                     pause_seconds,
                 )
@@ -305,9 +356,11 @@ class KokoroState:
         pause_seconds: float = 0.0,
         normalize_times_enabled: bool | None = None,
         normalize_numbers_enabled: bool | None = None,
+        style_preset: str = "neutral",
     ) -> Generator[tuple[int, object], None, None]:
         if use_gpu is None:
             use_gpu = self.cuda_available
+        style_preset, speed, pause_seconds = resolve_style_runtime(style_preset, speed, pause_seconds)
         parts = self._prepare_dialogue_parts(
             text,
             voice,
@@ -315,10 +368,11 @@ class KokoroState:
             normalize_numbers_enabled,
         )
         self.logger.debug(
-            "Stream start: text_len=%s parts=%s voice=%s speed=%s use_gpu=%s pause_seconds=%s",
+            "Stream start: text_len=%s parts=%s voice=%s style=%s speed=%s use_gpu=%s pause_seconds=%s",
             len(text),
             len(parts),
             voice,
+            style_preset,
             speed,
             use_gpu,
             pause_seconds,
@@ -344,7 +398,15 @@ class KokoroState:
                         keep_sentences=keep_sentences,
                     )
                     for sentence_index, sentence in enumerate(sentences):
-                        iterator = iter(pipeline(sentence, segment_voice, speed))
+                        iterator = iter(
+                            self._run_pipeline(
+                                sentence,
+                                segment_voice,
+                                speed,
+                                style_preset,
+                                pipeline,
+                            )
+                        )
                         current = next(iterator, None)
                         while current is not None:
                             _, ps, _ = current

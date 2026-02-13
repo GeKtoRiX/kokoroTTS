@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("KOKORO_SKIP_APP_INIT", "1")
@@ -31,18 +32,31 @@ def test_app_wrappers_delegate_to_state(monkeypatch):
     state = _State()
     monkeypatch.setattr(app, "APP_STATE", state)
 
-    output, ps = app.generate_first("hello", voice="af_heart", use_gpu=False)
+    output, ps = app.generate_first(
+        "hello",
+        voice="af_heart",
+        use_gpu=False,
+        style_preset="narrator",
+    )
     assert output[0] == 24000
     assert ps == "ps"
 
-    predicted = app.predict("hello", voice="af_heart")
+    predicted = app.predict("hello", voice="af_heart", style_preset="energetic")
     assert predicted[0] == 24000
 
-    tokens = app.tokenize_first("hello", voice="af_heart")
+    tokens = app.tokenize_first("hello", voice="af_heart", style_preset="neutral")
     assert tokens == "tokens"
 
     streamed = list(app.generate_all("hello", voice="af_heart", use_gpu=False))
     assert streamed == [(24000, [1.0])]
+
+    generate_calls = [kwargs for name, kwargs in state.calls if name == "generate_first"]
+    assert generate_calls[0]["style_preset"] == "narrator"
+    assert generate_calls[1]["style_preset"] == "energetic"
+    tokenize_call = next(kwargs for name, kwargs in state.calls if name == "tokenize_first")
+    stream_call = next(kwargs for name, kwargs in state.calls if name == "generate_all")
+    assert tokenize_call["style_preset"] == "neutral"
+    assert stream_call["style_preset"] == "neutral"
 
 
 def test_export_morphology_sheet_branches(monkeypatch, tmp_path):
@@ -128,3 +142,64 @@ def test_forward_gpu_and_main_delegate(monkeypatch):
     monkeypatch.setattr(app, "launch", lambda: called.setdefault("ok", True))
     app_main.main()
     assert called["ok"] is True
+
+
+def test_pronunciation_dictionary_handlers(monkeypatch, tmp_path):
+    class Repo:
+        def __init__(self):
+            self.saved = {}
+
+        def load_rules(self):
+            return {"a": {"OpenAI": "oʊpənˈeɪ aɪ"}}
+
+        def parse_rules_json(self, raw_json):
+            _ = raw_json
+            return {"a": {"Kokoro": "kˈOkəɹO"}}
+
+        def save_rules(self, rules):
+            self.saved = dict(rules)
+            return dict(rules)
+
+        def to_pretty_json(self, rules=None):
+            payload = rules if rules is not None else self.load_rules()
+            return str(payload)
+
+        def load_rules_from_file(self, file_path):
+            _ = file_path
+            return {"b": {"OpenAI": "əʊpənˈeɪ aɪ"}}
+
+    class Manager:
+        def __init__(self):
+            self.calls = []
+
+        def set_pronunciation_rules(self, rules):
+            self.calls.append(rules)
+            return sum(len(items) for items in rules.values())
+
+    repo = Repo()
+    manager = Manager()
+    monkeypatch.setattr(app, "PRONUNCIATION_REPOSITORY", repo)
+    monkeypatch.setattr(app, "MODEL_MANAGER", manager)
+    monkeypatch.setattr(app, "APP_STATE", None)
+    monkeypatch.setattr(
+        app,
+        "CONFIG",
+        SimpleNamespace(output_dir_abs=str(tmp_path)),
+    )
+
+    text, status = app.load_pronunciation_rules_json()
+    assert "OpenAI" in text
+    assert "Loaded 1 rule" in status
+
+    text, status = app.apply_pronunciation_rules_json('{"a":{"x":"y"}}')
+    assert "Kokoro" in text
+    assert "Applied 1 rule" in status
+
+    text, status = app.import_pronunciation_rules_json("import.json")
+    assert "OpenAI" in text
+    assert "Imported 1 rule" in status
+
+    export_path, status = app.export_pronunciation_rules_json()
+    assert export_path is not None
+    assert Path(export_path).is_file()
+    assert "Export ready" in status

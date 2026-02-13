@@ -3,9 +3,11 @@
 Local Gradio app for `hexgrad/Kokoro-82M` with:
 - generate + stream modes
 - voice mix and inline dialogue tags
+- persistent pronunciation dictionary (JSON rules by language)
 - multilingual voices (9 languages)
 - history panel + file cleanup
 - text normalization (time/number)
+- style presets (`neutral`, `narrator`, `energetic`)
 - output formats `wav/mp3/ogg` (ffmpeg fallback handling)
 
 ## Known issues
@@ -68,6 +70,7 @@ Create/edit `.env` (or start from `.env.example`):
 - `LOG_EVERY_N_SEGMENTS`
 - `UI_PRIMARY_HUE`
 - `MORPH_DB_ENABLED`, `MORPH_DB_PATH`, `MORPH_DB_TABLE_PREFIX`
+- `PRONUNCIATION_RULES_PATH` (default `data/pronunciation_rules.json`)
 - `WORDNET_DATA_DIR`, `WORDNET_AUTO_DOWNLOAD`, `SPACY_EN_MODEL_AUTO_DOWNLOAD`
 
 When `MORPH_DB_ENABLED=1`, each `generate` run writes English token analysis into SQLite:
@@ -81,6 +84,11 @@ Generated files are grouped by date inside `OUTPUT_DIR`:
 
 UI includes a `Morphology DB Export` accordion with `Download ODS` for `lexemes`, `token_occurrences`, `expressions`, or `POS table` (LibreOffice Calc native format).
 `POS table` export uses columns by parts of speech (Noun, Verb, Adjective, etc.) and rows with words.
+
+UI also includes a `Pronunciation dictionary` accordion:
+- load/apply persistent JSON rules without restart
+- import rules from `.json`
+- export current rules to `OUTPUT_DIR/YYYY-MM-DD/vocabulary`
 
 Expression detection uses:
 - spaCy `DependencyMatcher` for verb + particle phrasal verbs (lemma-based)
@@ -102,6 +110,17 @@ The app exposes the full Kokoro v1.0 voice set from `VOICES.md`:
 - `z` Mandarin Chinese
 
 UI includes a language selector that filters available voices. Inline `[voice=...]` tags still work per segment.
+
+## Style presets
+
+UI and API expose a `style_preset` parameter with values:
+- `neutral`
+- `narrator`
+- `energetic`
+
+Kokoro itself does not provide native emotion controls. In this app, presets are implemented as runtime tuning:
+- speed/pause multipliers
+- optional pass-through of a style argument to `KPipeline` only when that argument exists in the installed Kokoro version
 
 ## Fallback path (if local Python bootstrap fails)
 

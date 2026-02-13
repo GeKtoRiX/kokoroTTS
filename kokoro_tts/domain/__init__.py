@@ -16,6 +16,13 @@ from .normalization import (
 from .morphology import analyze_english_text
 from .expressions import extract_english_expressions
 from .splitting import smart_split, split_parts, split_sentences
+from .style import (
+    DEFAULT_STYLE_PRESET,
+    PIPELINE_STYLE_PARAM_NAMES,
+    STYLE_PRESET_CHOICES,
+    normalize_style_preset,
+    resolve_style_runtime,
+)
 from .voice import (
     CHOICES,
     DEFAULT_VOICE,
@@ -39,6 +46,7 @@ __all__ = [
     "LANGUAGE_CHOICES",
     "LANGUAGE_LABELS",
     "TextNormalizer",
+    "DEFAULT_STYLE_PRESET",
     "default_voice_for_lang",
     "digits_to_words",
     "get_voice_choices",
@@ -47,6 +55,7 @@ __all__ = [
     "extract_english_expressions",
     "normalize_lang_code",
     "normalize_numbers",
+    "normalize_style_preset",
     "normalize_times",
     "normalize_voice_input",
     "normalize_voice_tag",
@@ -57,8 +66,11 @@ __all__ = [
     "ordinal_to_words",
     "ordinalize_words",
     "parse_voice_segments",
+    "PIPELINE_STYLE_PARAM_NAMES",
     "resolve_voice",
+    "resolve_style_runtime",
     "smart_split",
+    "STYLE_PRESET_CHOICES",
     "split_parts",
     "split_sentences",
     "summarize_voice",
