@@ -57,6 +57,18 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_full.ps1
 - `smoke_full.ps1` runs runtime checks for generate/stream/dialogue/mix/split/output formats/multilingual voices.
 - `check_english_lexemes.py` performs a real lexeme split smoke check for English text; add `--verify-llm` to run an extra LM Studio POS verification pass (`LM_VERIFY_*` env vars).
 
+## Maintenance scripts (.bat)
+
+Technical `.bat` scripts are grouped under `scripts\bat\` (project root keeps only `run.bat`):
+
+```powershell
+.\scripts\bat\cleanup_project.bat
+.\scripts\bat\clear_morphology_db.bat
+```
+
+- `cleanup_project.bat` clears `LOG_DIR`, `OUTPUT_DIR`, and safe project-local caches.
+- `clear_morphology_db.bat` removes all rows from morphology tables while keeping the SQLite file.
+
 ## Developer quality checks
 
 Install dev tooling into `.venv`:

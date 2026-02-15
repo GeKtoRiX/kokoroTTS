@@ -2,9 +2,9 @@
 chcp 65001 >nul
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "PROJECT_DIR=%~dp0"
-cd /d "%PROJECT_DIR%"
-if "%PROJECT_DIR:~-1%"=="\" set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
+set "SCRIPT_DIR=%~dp0"
+cd /d "%SCRIPT_DIR%\..\.."
+set "PROJECT_DIR=%CD%"
 
 set "MORPH_DB_PATH="
 set "MORPH_DB_TABLE_PREFIX="

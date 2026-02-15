@@ -22,6 +22,9 @@ logs/
 outputs/
 *.log
 .coverage
+.coverage.*
+.pytest_cache/
+htmlcov/
 .mypy_cache/
 .ruff_cache/
 data/morphology.sqlite3
