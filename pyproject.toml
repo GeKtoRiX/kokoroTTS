@@ -1,0 +1,26 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [
+  ".venv",
+  "tools",
+]
+
+[tool.ruff.lint]
+select = ["E9", "F"]
+ignore = ["F401"]
+
+[tool.mypy]
+python_version = "3.12"
+pretty = true
+show_error_codes = true
+warn_unused_configs = true
+ignore_missing_imports = true
+follow_imports = "silent"
+exclude = "(^\\.venv/|^tools/)"
+files = [
+  "kokoro_tts/application/bootstrap.py",
+  "kokoro_tts/domain/morphology_datasets.py",
+  "scripts/benchmark_morph_ingest.py",
+  "scripts/check_english_lexemes.py",
+]

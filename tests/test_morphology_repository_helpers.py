@@ -1,6 +1,7 @@
 from kokoro_tts.storage.morphology_repository import (
     ExpressionRow,
     MorphRow,
+    MorphologyRepository,
     _build_key,
     _build_pos_table_from_entries,
     _normalize_prefix,
@@ -73,3 +74,10 @@ def test_unique_row_helpers_deduplicate():
     assert len(_unique_lexeme_rows([row, row])) == 1
     assert len(_unique_occurrence_rows([row, row])) == 1
     assert len(_unique_expression_rows([expr, expr])) == 1
+
+
+def test_serialize_feats_json_avoids_unnecessary_json_work():
+    repository = MorphologyRepository(enabled=False, db_path=":memory:")
+    assert repository._serialize_feats_json(None) == "{}"
+    assert repository._serialize_feats_json({}) == "{}"
+    assert repository._serialize_feats_json({"Number": "Sing"}) == '{"Number": "Sing"}'

@@ -21,6 +21,9 @@ dist/
 logs/
 outputs/
 *.log
+.coverage
+.mypy_cache/
+.ruff_cache/
 data/morphology.sqlite3
 tools/
 .env

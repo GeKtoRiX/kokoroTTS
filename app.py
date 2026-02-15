@@ -47,6 +47,8 @@ from kokoro_tts.domain.splitting import (
     split_parts,
     split_sentences,
 )
+from kokoro_tts.domain.expressions import extract_english_expressions
+from kokoro_tts.domain.morphology_datasets import normalize_morphology_dataset
 from kokoro_tts.domain.text_utils import (
     MD_LINK_RE,
     SLASHED_RE,
@@ -69,7 +71,9 @@ from kokoro_tts.integrations.ffmpeg import configure_ffmpeg
 from kokoro_tts.integrations.lm_studio import (
     LmStudioError,
     LessonRequest,
+    PosVerifyRequest,
     generate_lesson_text,
+    verify_pos_with_context,
 )
 from kokoro_tts.integrations.model_manager import ModelManager
 from kokoro_tts.integrations.spaces_gpu import build_forward_gpu
@@ -78,6 +82,7 @@ from kokoro_tts.storage.audio_writer import AudioWriter
 from kokoro_tts.storage.history_repository import HistoryRepository
 from kokoro_tts.storage.morphology_repository import MorphologyRepository
 from kokoro_tts.storage.pronunciation_repository import PronunciationRepository
+from kokoro_tts.application.bootstrap import initialize_app_services
 from kokoro_tts.application.history_service import HistoryService
 from kokoro_tts.application.state import KokoroState
 from kokoro_tts.application.ui_hooks import UiHooks
@@ -114,7 +119,11 @@ logger.debug(
     "DEFAULT_OUTPUT_FORMAT=%s DEFAULT_CONCURRENCY_LIMIT=%s LOG_EVERY_N_SEGMENTS=%s "
     "MORPH_DB_ENABLED=%s MORPH_DB_PATH=%s MORPH_DB_TABLE_PREFIX=%s "
     "LM_STUDIO_BASE_URL=%s LM_STUDIO_MODEL=%s LM_STUDIO_TIMEOUT_SECONDS=%s "
-    "LM_STUDIO_TEMPERATURE=%s LM_STUDIO_MAX_TOKENS=%s",
+    "LM_STUDIO_TEMPERATURE=%s LM_STUDIO_MAX_TOKENS=%s "
+    "LM_VERIFY_ENABLED=%s LM_VERIFY_BASE_URL=%s LM_VERIFY_MODEL=%s "
+    "LM_VERIFY_TIMEOUT_SECONDS=%s LM_VERIFY_TEMPERATURE=%s LM_VERIFY_MAX_TOKENS=%s "
+    "LM_VERIFY_MAX_RETRIES=%s LM_VERIFY_WORKERS=%s "
+    "MORPH_LOCAL_EXPRESSIONS_ENABLED=%s",
     CONFIG.log_level,
     CONFIG.file_log_level,
     CONFIG.log_dir,
@@ -135,6 +144,15 @@ logger.debug(
     CONFIG.lm_studio_timeout_seconds,
     CONFIG.lm_studio_temperature,
     CONFIG.lm_studio_max_tokens,
+    CONFIG.lm_verify_enabled,
+    CONFIG.lm_verify_base_url,
+    CONFIG.lm_verify_model,
+    CONFIG.lm_verify_timeout_seconds,
+    CONFIG.lm_verify_temperature,
+    CONFIG.lm_verify_max_tokens,
+    CONFIG.lm_verify_max_retries,
+    CONFIG.lm_verify_workers,
+    CONFIG.morph_local_expressions_enabled,
 )
 
 CUDA_AVAILABLE = torch.cuda.is_available()
@@ -433,6 +451,10 @@ def _parse_row_payload(raw_json):
     return payload
 
 
+def _normalize_morph_dataset(dataset) -> str:
+    return normalize_morphology_dataset(dataset)
+
+
 def morphology_db_view(dataset="occurrences", limit=100, offset=0):
     if MORPHOLOGY_REPOSITORY is None:
         return _empty_morphology_table_update(), "Morphology DB is not configured."
@@ -455,6 +477,9 @@ def morphology_db_view(dataset="occurrences", limit=100, offset=0):
 def morphology_db_add(dataset, row_json, limit=100, offset=0):
     if MORPHOLOGY_REPOSITORY is None:
         return _empty_morphology_table_update(), "Morphology DB is not configured."
+    if _normalize_morph_dataset(dataset) == "reviews":
+        table_update, view_status = morphology_db_view(dataset, limit, offset)
+        return table_update, f"Dataset reviews is read-only. {view_status}"
     try:
         payload = _parse_row_payload(row_json)
         inserted_id = MORPHOLOGY_REPOSITORY.insert_row(
@@ -471,6 +496,9 @@ def morphology_db_add(dataset, row_json, limit=100, offset=0):
 def morphology_db_update(dataset, row_id, row_json, limit=100, offset=0):
     if MORPHOLOGY_REPOSITORY is None:
         return _empty_morphology_table_update(), "Morphology DB is not configured."
+    if _normalize_morph_dataset(dataset) == "reviews":
+        table_update, view_status = morphology_db_view(dataset, limit, offset)
+        return table_update, f"Dataset reviews is read-only. {view_status}"
     try:
         payload = _parse_row_payload(row_json)
         updated = MORPHOLOGY_REPOSITORY.update_row(
@@ -488,6 +516,9 @@ def morphology_db_update(dataset, row_id, row_json, limit=100, offset=0):
 def morphology_db_delete(dataset, row_id, limit=100, offset=0):
     if MORPHOLOGY_REPOSITORY is None:
         return _empty_morphology_table_update(), "Morphology DB is not configured."
+    if _normalize_morph_dataset(dataset) == "reviews":
+        table_update, view_status = morphology_db_view(dataset, limit, offset)
+        return table_update, f"Dataset reviews is read-only. {view_status}"
     try:
         deleted = MORPHOLOGY_REPOSITORY.delete_row(
             dataset=str(dataset or "occurrences"),
@@ -548,8 +579,8 @@ def build_lesson_for_tts(
     timeout_seconds = _coerce_int(
         llm_timeout_seconds,
         CONFIG.lm_studio_timeout_seconds,
-        5,
-        600,
+        0,
+        86400,
     )
     extra_instructions = (llm_extra_instructions or "").strip()
 
@@ -583,65 +614,11 @@ def build_lesson_for_tts(
 
 
 if not SKIP_APP_INIT:
-    PRONUNCIATION_REPOSITORY = PronunciationRepository(
-        PRONUNCIATION_RULES_PATH,
-        logger_instance=logger,
-    )
-    pronunciation_rules = PRONUNCIATION_REPOSITORY.load_rules()
-    logger.info(
-        "Pronunciation dictionary path: %s (languages=%s entries=%s)",
-        PRONUNCIATION_RULES_PATH,
-        len(pronunciation_rules),
-        sum(len(entries) for entries in pronunciation_rules.values()),
-    )
-    MODEL_MANAGER = ModelManager(
-        CONFIG.repo_id,
-        CUDA_AVAILABLE,
-        logger,
-        pronunciation_rules=pronunciation_rules,
-    )
-    TEXT_NORMALIZER = TextNormalizer(
-        CONFIG.char_limit,
-        CONFIG.normalize_times,
-        CONFIG.normalize_numbers,
-    )
-    AUDIO_WRITER = AudioWriter(CONFIG.output_dir, SAMPLE_RATE, logger)
-    MORPHOLOGY_REPOSITORY = MorphologyRepository(
-        enabled=CONFIG.morph_db_enabled,
-        db_path=CONFIG.morph_db_path,
-        table_prefix=CONFIG.morph_db_table_prefix,
-        logger_instance=logger,
-    )
-    forward_gpu = build_forward_gpu(MODEL_MANAGER)
-    ui_hooks = UiHooks(
-        warn=gr.Warning,
-        info=gr.Info,
-        error=gr.Error,
-        error_type=gr.exceptions.Error,
-    )
-    APP_STATE = KokoroState(
-        MODEL_MANAGER,
-        TEXT_NORMALIZER,
-        AUDIO_WRITER,
-        CONFIG.max_chunk_chars,
-        CUDA_AVAILABLE,
-        CONFIG.log_segment_every,
-        logger,
-        gpu_forward=forward_gpu,
-        ui_hooks=ui_hooks,
-        morphology_repository=MORPHOLOGY_REPOSITORY,
-    )
-    HISTORY_REPOSITORY = HistoryRepository(CONFIG.output_dir_abs, logger)
-    HISTORY_SERVICE = HistoryService(
-        CONFIG.history_limit,
-        HISTORY_REPOSITORY,
-        APP_STATE,
-        logger,
-    )
-    app, API_OPEN = create_gradio_app(
+    services = initialize_app_services(
         config=CONFIG,
         cuda_available=CUDA_AVAILABLE,
         logger=logger,
+        pronunciation_rules_path=PRONUNCIATION_RULES_PATH,
         generate_first=generate_first,
         tokenize_first=tokenize_first,
         generate_all=generate_all,
@@ -656,9 +633,18 @@ if not SKIP_APP_INIT:
         import_pronunciation_rules=import_pronunciation_rules_json,
         export_pronunciation_rules=export_pronunciation_rules_json,
         build_lesson_for_tts=build_lesson_for_tts,
-        history_service=HISTORY_SERVICE,
         choices=CHOICES,
     )
+    MODEL_MANAGER = services.model_manager
+    TEXT_NORMALIZER = services.text_normalizer
+    AUDIO_WRITER = services.audio_writer
+    MORPHOLOGY_REPOSITORY = services.morphology_repository
+    PRONUNCIATION_REPOSITORY = services.pronunciation_repository
+    APP_STATE = services.app_state
+    HISTORY_REPOSITORY = services.history_repository
+    HISTORY_SERVICE = services.history_service
+    app = services.app
+    API_OPEN = services.api_open
 else:
     logger.info("KOKORO_SKIP_APP_INIT enabled; skipping model and UI initialization")
 
