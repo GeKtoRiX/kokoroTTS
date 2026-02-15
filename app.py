@@ -87,6 +87,7 @@ from kokoro_tts.application.history_service import HistoryService
 from kokoro_tts.application.state import KokoroState
 from kokoro_tts.application.ui_hooks import UiHooks
 from kokoro_tts.ui.gradio_app import (
+    APP_CSS,
     APP_THEME,
     DIALOGUE_NOTE,
     TOKEN_NOTE,
@@ -790,6 +791,11 @@ def launch() -> None:
 
     if "ssr_mode" in launch_params:
         launch_kwargs["ssr_mode"] = SSR_MODE
+
+    if "theme" in launch_params:
+        launch_kwargs["theme"] = APP_THEME
+    if "css" in launch_params:
+        launch_kwargs["css"] = APP_CSS
 
     queued.launch(**launch_kwargs)
 

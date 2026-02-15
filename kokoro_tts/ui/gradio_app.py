@@ -25,6 +25,7 @@ from ..domain.voice import (
 )
 
 UI_PRIMARY_HUE = os.getenv("UI_PRIMARY_HUE", "green").strip() or "green"
+APP_TITLE = "KokoroTTS"
 APP_THEME = gr.themes.Base(primary_hue=UI_PRIMARY_HUE)
 APP_CSS = """
 #runtime-mode-selector .wrap {
@@ -45,6 +46,10 @@ APP_CSS = """
   flex-direction: column;
   gap: 12px;
   margin-top: 12px;
+  margin-bottom: 8px;
+}
+
+#app-title {
   margin-bottom: 8px;
 }
 
@@ -875,8 +880,9 @@ def create_gradio_app(
     api_open = config.space_id != "hexgrad/Kokoro-TTS"
     api_name = None if api_open else False
     logger.debug("API_OPEN=%s", api_open)
-    with gr.Blocks(theme=APP_THEME, css=APP_CSS) as app:
+    with gr.Blocks(title=APP_TITLE) as app:
         history_state = gr.State([])
+        gr.Markdown(f"# {APP_TITLE}", elem_id="app-title")
         with gr.Row(elem_id="main-layout"):
             with gr.Column():
                 with gr.Accordion("Input", open=True):

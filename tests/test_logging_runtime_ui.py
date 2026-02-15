@@ -3,7 +3,7 @@ from pathlib import Path
 from kokoro_tts.config import AppConfig
 from kokoro_tts.logging_config import setup_logging
 from kokoro_tts.runtime import CUDA_AVAILABLE
-from kokoro_tts.ui.gradio_app import create_gradio_app
+from kokoro_tts.ui.gradio_app import APP_TITLE, create_gradio_app
 
 
 class _Logger:
@@ -96,7 +96,14 @@ def test_create_gradio_app_in_both_api_modes(tmp_path):
         choices={},
     )
     assert app_open is not None
+    assert app_open.title == APP_TITLE
     assert api_open is True
+    app_open_components = app_open.get_config_file().get("components", [])
+    assert any(
+        component.get("type") == "markdown"
+        and component.get("props", {}).get("value") == f"# {APP_TITLE}"
+        for component in app_open_components
+    )
 
     config_closed = _build_config(
         tmp_path,
@@ -117,4 +124,5 @@ def test_create_gradio_app_in_both_api_modes(tmp_path):
         choices={},
     )
     assert app_closed is not None
+    assert app_closed.title == APP_TITLE
     assert api_open_closed is False
