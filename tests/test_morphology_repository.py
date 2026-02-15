@@ -455,3 +455,369 @@ def test_morphology_repository_crud_operations(tmp_path: Path):
     assert lex_updated == 1
     lex_deleted = repo.delete_row(dataset="lexemes", row_id=lexeme_key)
     assert lex_deleted == 1
+
+
+def test_morphology_repository_writes_reviews_on_verify_success(tmp_path: Path):
+    db_path = tmp_path / "reviews_success.sqlite3"
+
+    def analyzer(_: str):
+        return {
+            "language": "en",
+            "items": [
+                {"token": "look", "lemma": "look", "upos": "VERB", "feats": {}, "start": 0, "end": 4, "key": "look|verb"},
+                {"token": "up", "lemma": "up", "upos": "ADP", "feats": {}, "start": 5, "end": 7, "key": "up|adp"},
+            ],
+        }
+
+    def verifier(payload):
+        _ = payload
+        return {
+            "token_checks": [
+                {"token_index": 0, "lemma": "look", "upos": "VERB", "feats": {}},
+                {"token_index": 1, "lemma": "up", "upos": "ADP", "feats": {}},
+            ],
+            "new_expressions": [],
+        }
+
+    repo = MorphologyRepository(
+        enabled=True,
+        db_path=str(db_path),
+        logger_instance=logging.getLogger("test"),
+        analyzer=analyzer,
+        expression_extractor=lambda _: [],
+        lm_verifier=verifier,
+        lm_verify_enabled=True,
+        lm_verify_model="verify-model",
+    )
+    repo.ingest_dialogue_parts([[("af_heart", "look up")]], source="generate_first")
+    repo.wait_for_pending_reviews(3.0)
+
+    connection = sqlite3.connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT status, is_match, model FROM morph_reviews ORDER BY token_index"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert len(rows) == 2
+    assert rows[0][0] == "success"
+    assert rows[0][1] == 1
+    assert rows[0][2] == "verify-model"
+
+
+def test_morphology_repository_writes_review_mismatch(tmp_path: Path):
+    db_path = tmp_path / "reviews_mismatch.sqlite3"
+
+    repo = MorphologyRepository(
+        enabled=True,
+        db_path=str(db_path),
+        logger_instance=logging.getLogger("test"),
+        analyzer=lambda _: {
+            "language": "en",
+            "items": [
+                {"token": "runs", "lemma": "run", "upos": "VERB", "feats": {}, "start": 0, "end": 4, "key": "run|verb"}
+            ],
+        },
+        expression_extractor=lambda _: [],
+        lm_verifier=lambda _payload: {
+            "token_checks": [
+                {"token_index": 0, "lemma": "running", "upos": "NOUN", "feats": {}}
+            ],
+            "new_expressions": [],
+        },
+        lm_verify_enabled=True,
+        lm_verify_model="verify-model",
+    )
+    repo.ingest_dialogue_parts([[("af_heart", "runs")]], source="generate_first")
+    repo.wait_for_pending_reviews(3.0)
+
+    connection = sqlite3.connect(db_path)
+    try:
+        row = connection.execute(
+            "SELECT is_match, mismatch_fields FROM morph_reviews LIMIT 1"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert row[0] == 0
+    assert "lemma" in row[1]
+    assert "upos" in row[1]
+
+
+def test_morphology_repository_review_failure_retries_and_does_not_crash(tmp_path: Path):
+    db_path = tmp_path / "reviews_failure.sqlite3"
+    attempts = {"count": 0}
+
+    def failing_verifier(_payload):
+        attempts["count"] += 1
+        raise RuntimeError("offline")
+
+    repo = MorphologyRepository(
+        enabled=True,
+        db_path=str(db_path),
+        logger_instance=logging.getLogger("test"),
+        analyzer=lambda _: {
+            "language": "en",
+            "items": [
+                {"token": "test", "lemma": "test", "upos": "NOUN", "feats": {}, "start": 0, "end": 4, "key": "test|noun"}
+            ],
+        },
+        expression_extractor=lambda _: [],
+        lm_verifier=failing_verifier,
+        lm_verify_enabled=True,
+        lm_verify_retries=1,
+    )
+    repo.ingest_dialogue_parts([[("af_heart", "test")]], source="generate_first")
+    repo.wait_for_pending_reviews(3.0)
+
+    connection = sqlite3.connect(db_path)
+    try:
+        row = connection.execute(
+            "SELECT status, attempt_count, error_text FROM morph_reviews LIMIT 1"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert attempts["count"] == 2
+    assert row[0] == "failed"
+    assert row[1] == 2
+    assert "offline" in row[2]
+
+
+def test_morphology_repository_skips_non_english_segments_for_verify(tmp_path: Path):
+    db_path = tmp_path / "reviews_non_en.sqlite3"
+    called = {"count": 0}
+
+    def verifier(_payload):
+        called["count"] += 1
+        return {"token_checks": [], "new_expressions": []}
+
+    repo = MorphologyRepository(
+        enabled=True,
+        db_path=str(db_path),
+        logger_instance=logging.getLogger("test"),
+        analyzer=lambda _: {
+            "language": "en",
+            "items": [
+                {"token": "Привет", "lemma": "Привет", "upos": "X", "feats": {}, "start": 0, "end": 6, "key": "привет|x"}
+            ],
+        },
+        expression_extractor=lambda _: [],
+        lm_verifier=verifier,
+        lm_verify_enabled=True,
+    )
+    repo.ingest_dialogue_parts([[("af_heart", "Привет")]], source="generate_first")
+    repo.wait_for_pending_reviews(3.0)
+
+    connection = sqlite3.connect(db_path)
+    try:
+        count = connection.execute("SELECT COUNT(*) FROM morph_reviews").fetchone()[0]
+    finally:
+        connection.close()
+
+    assert called["count"] == 0
+    assert count == 0
+
+
+def test_morphology_repository_auto_adds_valid_lm_expressions(tmp_path: Path):
+    db_path = tmp_path / "reviews_expressions.sqlite3"
+
+    repo = MorphologyRepository(
+        enabled=True,
+        db_path=str(db_path),
+        logger_instance=logging.getLogger("test"),
+        analyzer=lambda _: {
+            "language": "en",
+            "items": [
+                {"token": "look", "lemma": "look", "upos": "VERB", "feats": {}, "start": 0, "end": 4, "key": "look|verb"},
+                {"token": "up", "lemma": "up", "upos": "ADP", "feats": {}, "start": 5, "end": 7, "key": "up|adp"},
+                {"token": "now", "lemma": "now", "upos": "ADV", "feats": {}, "start": 8, "end": 11, "key": "now|adv"},
+            ],
+        },
+        expression_extractor=lambda _: [],
+        lm_verifier=lambda _payload: {
+            "token_checks": [
+                {"token_index": 0, "lemma": "look", "upos": "VERB", "feats": {}},
+                {"token_index": 1, "lemma": "up", "upos": "ADP", "feats": {}},
+                {"token_index": 2, "lemma": "now", "upos": "ADV", "feats": {}},
+            ],
+            "new_expressions": [
+                {"text": "look up", "lemma": "look up", "kind": "phrasal_verb", "start": 0, "end": 7},
+                {"text": "up now", "lemma": "up now", "kind": "idiom", "start": 5, "end": 11},
+            ],
+        },
+        lm_verify_enabled=True,
+    )
+    repo.ingest_dialogue_parts([[("af_heart", "look up now")]], source="generate_first")
+    repo.wait_for_pending_reviews(3.0)
+
+    connection = sqlite3.connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT expression_text, expression_type, match_source FROM morph_expressions ORDER BY start_offset"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert len(rows) == 1
+    assert rows[0][0].lower() == "look up"
+    assert rows[0][1] == "phrasal_verb"
+    assert rows[0][2] == "lm_verify_auto"
+
+
+def test_morphology_repository_auto_adds_text_only_lm_expressions(tmp_path: Path):
+    db_path = tmp_path / "reviews_expressions_text.sqlite3"
+    text = "stand up for himself and rock the boat"
+
+    repo = MorphologyRepository(
+        enabled=True,
+        db_path=str(db_path),
+        logger_instance=logging.getLogger("test"),
+        analyzer=lambda _: {
+            "language": "en",
+            "items": [
+                {"token": "stand", "lemma": "stand", "upos": "VERB", "feats": {}, "start": 0, "end": 5, "key": "stand|verb"},
+                {"token": "up", "lemma": "up", "upos": "ADP", "feats": {}, "start": 6, "end": 8, "key": "up|adp"},
+                {"token": "for", "lemma": "for", "upos": "ADP", "feats": {}, "start": 9, "end": 12, "key": "for|adp"},
+                {"token": "himself", "lemma": "himself", "upos": "PRON", "feats": {}, "start": 13, "end": 20, "key": "himself|pron"},
+                {"token": "and", "lemma": "and", "upos": "CCONJ", "feats": {}, "start": 21, "end": 24, "key": "and|cconj"},
+                {"token": "rock", "lemma": "rock", "upos": "VERB", "feats": {}, "start": 25, "end": 29, "key": "rock|verb"},
+                {"token": "the", "lemma": "the", "upos": "DET", "feats": {}, "start": 30, "end": 33, "key": "the|det"},
+                {"token": "boat", "lemma": "boat", "upos": "NOUN", "feats": {}, "start": 34, "end": 38, "key": "boat|noun"},
+            ],
+        },
+        expression_extractor=lambda _: [],
+        lm_verifier=lambda _payload: {
+            "token_checks": [
+                {"token_index": 0, "lemma": "stand", "upos": "VERB", "feats": {}},
+                {"token_index": 1, "lemma": "up", "upos": "ADP", "feats": {}},
+                {"token_index": 2, "lemma": "for", "upos": "ADP", "feats": {}},
+                {"token_index": 3, "lemma": "himself", "upos": "PRON", "feats": {}},
+                {"token_index": 4, "lemma": "and", "upos": "CCONJ", "feats": {}},
+                {"token_index": 5, "lemma": "rock", "upos": "VERB", "feats": {}},
+                {"token_index": 6, "lemma": "the", "upos": "DET", "feats": {}},
+                {"token_index": 7, "lemma": "boat", "upos": "NOUN", "feats": {}},
+            ],
+            "new_expressions": ["stand up for himself, rock the boat"],
+        },
+        lm_verify_enabled=True,
+    )
+    repo.ingest_dialogue_parts([[("af_heart", text)]], source="generate_first")
+    repo.wait_for_pending_reviews(3.0)
+
+    connection = sqlite3.connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT expression_text, expression_type, match_source FROM morph_expressions ORDER BY start_offset"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert len(rows) == 2
+    assert rows[0][0].lower() == "stand up for himself"
+    assert rows[0][1] == "phrasal_verb"
+    assert rows[0][2] == "lm_verify_auto"
+    assert rows[1][0].lower() == "rock the boat"
+    assert rows[1][1] == "idiom"
+    assert rows[1][2] == "lm_verify_auto"
+
+
+def test_morphology_repository_verifies_one_sentence_per_request(tmp_path: Path):
+    db_path = tmp_path / "reviews_sentence_batches.sqlite3"
+    text = "Jake stood up for himself. He refused to rock the boat."
+    payloads: list[dict[str, object]] = []
+
+    def verifier(payload: dict[str, object]):
+        payloads.append(payload)
+        segment_text = str(payload.get("segment_text", ""))
+        tokens = payload.get("tokens", [])
+        if not isinstance(tokens, list):
+            tokens = []
+        token_checks = []
+        for item in tokens:
+            token_payload = item if isinstance(item, dict) else {}
+            token_checks.append(
+                {
+                    "token_index": int(token_payload.get("token_index", 0)),
+                    "lemma": str(token_payload.get("lemma", "")),
+                    "upos": str(token_payload.get("upos", "X")),
+                    "feats": {},
+                }
+            )
+        if segment_text == "Jake stood up for himself.":
+            return {
+                "token_checks": token_checks,
+                "new_expressions": [
+                    {
+                        "text": "stood up for himself",
+                        "lemma": "stand up for himself",
+                        "kind": "phrasal_verb",
+                        "start": 5,
+                        "end": 25,
+                    }
+                ],
+            }
+        if segment_text == "He refused to rock the boat.":
+            return {
+                "token_checks": token_checks,
+                "new_expressions": [
+                    {
+                        "text": "rock the boat",
+                        "lemma": "rock the boat",
+                        "kind": "idiom",
+                        "start": 14,
+                        "end": 27,
+                    }
+                ],
+            }
+        raise AssertionError(f"Unexpected segment_text: {segment_text}")
+
+    repo = MorphologyRepository(
+        enabled=True,
+        db_path=str(db_path),
+        logger_instance=logging.getLogger("test"),
+        analyzer=lambda _: {
+            "language": "en",
+            "items": [
+                {"token": "Jake", "lemma": "Jake", "upos": "PROPN", "feats": {}, "start": 0, "end": 4, "key": "jake|propn"},
+                {"token": "stood", "lemma": "stand", "upos": "VERB", "feats": {}, "start": 5, "end": 10, "key": "stand|verb"},
+                {"token": "up", "lemma": "up", "upos": "ADP", "feats": {}, "start": 11, "end": 13, "key": "up|adp"},
+                {"token": "for", "lemma": "for", "upos": "ADP", "feats": {}, "start": 14, "end": 17, "key": "for|adp"},
+                {"token": "himself", "lemma": "himself", "upos": "PRON", "feats": {}, "start": 18, "end": 25, "key": "himself|pron"},
+                {"token": "He", "lemma": "he", "upos": "PRON", "feats": {}, "start": 27, "end": 29, "key": "he|pron"},
+                {"token": "refused", "lemma": "refuse", "upos": "VERB", "feats": {}, "start": 30, "end": 37, "key": "refuse|verb"},
+                {"token": "to", "lemma": "to", "upos": "PART", "feats": {}, "start": 38, "end": 40, "key": "to|part"},
+                {"token": "rock", "lemma": "rock", "upos": "VERB", "feats": {}, "start": 41, "end": 45, "key": "rock|verb"},
+                {"token": "the", "lemma": "the", "upos": "DET", "feats": {}, "start": 46, "end": 49, "key": "the|det"},
+                {"token": "boat", "lemma": "boat", "upos": "NOUN", "feats": {}, "start": 50, "end": 54, "key": "boat|noun"},
+            ],
+        },
+        expression_extractor=lambda _: [],
+        lm_verifier=verifier,
+        lm_verify_enabled=True,
+    )
+    repo.ingest_dialogue_parts([[("af_heart", text)]], source="generate_first")
+    repo.wait_for_pending_reviews(3.0)
+
+    assert len(payloads) == 2
+    assert payloads[0]["segment_text"] == "Jake stood up for himself."
+    assert payloads[1]["segment_text"] == "He refused to rock the boat."
+
+    connection = sqlite3.connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT expression_text, expression_type, start_offset, end_offset FROM morph_expressions ORDER BY start_offset"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert len(rows) == 2
+    assert rows[0][0].lower() == "stood up for himself"
+    assert rows[0][1] == "phrasal_verb"
+    assert rows[0][2] == 5
+    assert rows[0][3] == 25
+    assert rows[1][0].lower() == "rock the boat"
+    assert rows[1][1] == "idiom"
+    assert rows[1][2] == 41
+    assert rows[1][3] == 54

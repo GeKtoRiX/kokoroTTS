@@ -10,6 +10,13 @@ from typing import Optional
 from .utils import parse_float_env, parse_int_env, resolve_path
 
 
+def _parse_timeout_seconds_env(name: str, default: int) -> int:
+    value = parse_int_env(name, default, min_value=0, max_value=86400)
+    if value != 0 and value < 5:
+        return 5
+    return value
+
+
 @dataclass(frozen=True)
 class AppConfig:
     log_level: str
@@ -38,6 +45,16 @@ class AppConfig:
     lm_studio_timeout_seconds: int = 120
     lm_studio_temperature: float = 0.3
     lm_studio_max_tokens: int = 2048
+    lm_verify_enabled: bool = False
+    lm_verify_base_url: str = "http://127.0.0.1:1234/v1"
+    lm_verify_api_key: str = "lm-studio"
+    lm_verify_model: str = ""
+    lm_verify_timeout_seconds: int = 30
+    lm_verify_temperature: float = 0.0
+    lm_verify_max_tokens: int = 2048
+    lm_verify_max_retries: int = 2
+    lm_verify_workers: int = 1
+    morph_local_expressions_enabled: bool = False
 
 
 def load_config() -> AppConfig:
@@ -92,11 +109,9 @@ def load_config() -> AppConfig:
     ).strip()
     lm_studio_api_key = os.getenv("LM_STUDIO_API_KEY", "lm-studio").strip() or "lm-studio"
     lm_studio_model = os.getenv("LM_STUDIO_MODEL", "").strip()
-    lm_studio_timeout_seconds = parse_int_env(
+    lm_studio_timeout_seconds = _parse_timeout_seconds_env(
         "LM_STUDIO_TIMEOUT_SECONDS",
         120,
-        min_value=5,
-        max_value=600,
     )
     lm_studio_temperature = parse_float_env(
         "LM_STUDIO_TEMPERATURE",
@@ -109,6 +124,53 @@ def load_config() -> AppConfig:
         2048,
         min_value=64,
         max_value=32768,
+    )
+    lm_verify_enabled = os.getenv("LM_VERIFY_ENABLED", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    lm_verify_base_url = os.getenv(
+        "LM_VERIFY_BASE_URL", "http://127.0.0.1:1234/v1"
+    ).strip()
+    lm_verify_api_key = os.getenv("LM_VERIFY_API_KEY", "lm-studio").strip() or "lm-studio"
+    lm_verify_model = os.getenv("LM_VERIFY_MODEL", "").strip()
+    lm_verify_timeout_seconds = _parse_timeout_seconds_env(
+        "LM_VERIFY_TIMEOUT_SECONDS",
+        30,
+    )
+    lm_verify_temperature = parse_float_env(
+        "LM_VERIFY_TEMPERATURE",
+        0.0,
+        min_value=0.0,
+        max_value=2.0,
+    )
+    lm_verify_max_tokens = parse_int_env(
+        "LM_VERIFY_MAX_TOKENS",
+        2048,
+        min_value=64,
+        max_value=32768,
+    )
+    lm_verify_max_retries = parse_int_env(
+        "LM_VERIFY_MAX_RETRIES",
+        2,
+        min_value=0,
+        max_value=5,
+    )
+    lm_verify_workers = parse_int_env(
+        "LM_VERIFY_WORKERS",
+        1,
+        min_value=1,
+        max_value=4,
+    )
+    morph_local_expressions_enabled = os.getenv(
+        "MORPH_LOCAL_EXPRESSIONS_ENABLED", "0"
+    ).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
     )
     return AppConfig(
         log_level=log_level,
@@ -137,4 +199,14 @@ def load_config() -> AppConfig:
         lm_studio_timeout_seconds=lm_studio_timeout_seconds,
         lm_studio_temperature=lm_studio_temperature,
         lm_studio_max_tokens=lm_studio_max_tokens,
+        lm_verify_enabled=lm_verify_enabled,
+        lm_verify_base_url=lm_verify_base_url,
+        lm_verify_api_key=lm_verify_api_key,
+        lm_verify_model=lm_verify_model,
+        lm_verify_timeout_seconds=lm_verify_timeout_seconds,
+        lm_verify_temperature=lm_verify_temperature,
+        lm_verify_max_tokens=lm_verify_max_tokens,
+        lm_verify_max_retries=lm_verify_max_retries,
+        lm_verify_workers=lm_verify_workers,
+        morph_local_expressions_enabled=morph_local_expressions_enabled,
     )

@@ -86,6 +86,23 @@ def test_export_morphology_sheet_branches(monkeypatch, tmp_path):
     assert "Export failed" in status
 
 
+def test_morphology_db_wrappers_block_reviews_dataset(monkeypatch):
+    class Repo:
+        def list_rows(self, dataset, limit, offset):
+            _ = (dataset, limit, offset)
+            return ["id", "status"], [["1", "success"]]
+
+    monkeypatch.setattr(app, "MORPHOLOGY_REPOSITORY", Repo())
+
+    _, status_add = app.morphology_db_add("reviews", '{"source":"manual"}', 20, 0)
+    _, status_update = app.morphology_db_update("reviews", "1", '{"status":"failed"}', 20, 0)
+    _, status_delete = app.morphology_db_delete("reviews", "1", 20, 0)
+
+    assert "read-only" in status_add.lower()
+    assert "read-only" in status_update.lower()
+    assert "read-only" in status_delete.lower()
+
+
 def test_launch_handles_skip_mode(monkeypatch):
     monkeypatch.setattr(app, "SKIP_APP_INIT", True)
     assert app.launch() is None

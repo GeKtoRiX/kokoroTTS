@@ -108,6 +108,29 @@ def test_extract_dependency_phrasals_filters_particles(monkeypatch):
     assert items[0].wordnet is True
 
 
+def test_extract_dependency_phrasals_relaxed_deps_require_wordnet(monkeypatch):
+    tokens = [
+        _FakeToken("ran", "run", "VERB", "ROOT", 0, 0),
+        _FakeToken("into", "into", "ADP", "prep", 4, 1),
+        _FakeToken("looked", "look", "VERB", "ROOT", 10, 2),
+        _FakeToken("forward", "forward", "ADV", "advmod", 17, 3),
+        _FakeToken("moved", "move", "VERB", "ROOT", 25, 4),
+        _FakeToken("away", "away", "ADP", "advmod", 31, 5),
+    ]
+    doc = _FakeDoc(tokens)
+    monkeypatch.setattr(
+        e,
+        "_load_dependency_matcher",
+        lambda: (lambda _doc: [("PHRASAL_VERB", [0, 1]), ("PHRASAL_VERB", [2, 3]), ("PHRASAL_VERB", [4, 5])]),
+    )
+
+    items = e._extract_dependency_phrasals(doc, {"run into", "look forward"})
+    lemmas = [item.lemma for item in items]
+    assert "run into" in lemmas
+    assert "look forward" in lemmas
+    assert "move away" not in lemmas
+
+
 def test_extract_wordnet_idioms_from_lemma_matcher(monkeypatch):
     tokens = [
         _FakeToken("kicked", "kick", "VERB", "ROOT", 0, 0),
@@ -121,6 +144,33 @@ def test_extract_wordnet_idioms_from_lemma_matcher(monkeypatch):
     assert len(items) == 1
     assert items[0].kind == "idiom"
     assert items[0].lemma == "kick the bucket"
+
+
+def test_extract_wordnet_idioms_supports_plural_singular_variants(monkeypatch):
+    tokens = [
+        _FakeToken("spilled", "spill", "VERB", "ROOT", 0, 0),
+        _FakeToken("the", "the", "DET", "det", 8, 1),
+        _FakeToken("beans", "bean", "NOUN", "obj", 12, 2),
+    ]
+    doc = _FakeDoc(tokens)
+    monkeypatch.setattr(e, "_load_idiom_lemma_matcher", lambda: (lambda _doc: [("WORDNET_IDIOM", 0, 3)]))
+
+    items = e._extract_wordnet_idioms(doc, {"spill the beans"})
+    assert len(items) == 1
+    assert items[0].lemma == "spill the beans"
+    assert items[0].key == "spill the beans|idiom"
+
+
+def test_build_idiom_lookup_contains_inflectional_variants():
+    lookup = e._build_idiom_lookup({"spill the beans"})
+    assert lookup["spill the beans"] == "spill the beans"
+    assert lookup["spill the bean"] == "spill the beans"
+
+
+def test_idiom_match_token_pattern_handles_plural_lemma_variants():
+    pattern = e._idiom_match_token_pattern("beans")
+    assert "LEMMA" in pattern
+    assert pattern["LEMMA"]["IN"] == ["bean", "beans"]
 
 
 def test_map_match_tokens_uses_fallback_positions():
@@ -159,6 +209,40 @@ def test_load_wordnet_phrase_inventory_filters_phrases(monkeypatch):
     phrasal, idioms = e._load_wordnet_phrase_inventory()
     assert "look up" in phrasal
     assert "kick the bucket" in idioms
+    assert "break the ice" in idioms
+    assert "when pigs fly" in idioms
+    e._load_wordnet_phrase_inventory.cache_clear()
+
+
+def test_load_wordnet_phrase_inventory_skips_two_token_idiom_noise(monkeypatch):
+    class Synset:
+        def __init__(self, pos, names):
+            self._pos = pos
+            self._names = names
+
+        def pos(self):
+            return self._pos
+
+        def lemma_names(self):
+            return self._names
+
+    class WordNet:
+        def all_synsets(self):
+            return [
+                Synset("n", ["forest_fire", "short_story"]),
+                Synset("r", ["and_then"]),
+                Synset("n", ["kick_the_bucket"]),
+                Synset("v", ["look_up"]),
+            ]
+
+    monkeypatch.setattr(e, "_load_wordnet_corpus", lambda: WordNet())
+    e._load_wordnet_phrase_inventory.cache_clear()
+    phrasal, idioms = e._load_wordnet_phrase_inventory()
+    assert "look up" in phrasal
+    assert "kick the bucket" in idioms
+    assert "forest fire" not in idioms
+    assert "short story" not in idioms
+    assert "and then" not in idioms
     e._load_wordnet_phrase_inventory.cache_clear()
 
 

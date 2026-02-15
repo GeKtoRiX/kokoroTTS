@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from itertools import product
 import logging
 import os
 from pathlib import Path
@@ -37,6 +38,12 @@ _PHRASAL_PARTICLES = {
     "up",
 }
 _PHRASE_TOKEN_RE = re.compile(r"^[a-z][a-z'-]*$", re.IGNORECASE)
+_PHRASAL_DEP_STRICT = "prt"
+_PHRASAL_RELAXED_DEPS = {"prep", "advmod"}
+_IDIOM_FALLBACK_PHRASES = {
+    "break the ice",
+    "when pigs fly",
+}
 
 
 @dataclass(frozen=True)
@@ -99,6 +106,11 @@ def _extract_dependency_phrasals(doc, wordnet_phrasal: set[str]) -> list[Express
         if particle_lemma not in _PHRASAL_PARTICLES:
             continue
         lemma = f"{_token_lemma_lower(verb_token)} {particle_lemma}"
+        # For non-prt dependencies, accept only phrases present in WordNet inventory
+        # to limit false positives from generic verb+adposition patterns.
+        particle_dep = str(getattr(particle_token, "dep_", "")).strip().lower()
+        if particle_dep != _PHRASAL_DEP_STRICT and lemma not in wordnet_phrasal:
+            continue
         text_value = _span_like_text([verb_token, particle_token])
         start = min(verb_token.idx, particle_token.idx)
         end = max(
@@ -124,6 +136,7 @@ def _extract_wordnet_idioms(doc, wordnet_idioms: set[str]) -> list[ExpressionIte
     matcher = _load_idiom_lemma_matcher()
     if matcher is None:
         return []
+    idiom_lookup = _build_idiom_lookup(wordnet_idioms)
     items: list[ExpressionItem] = []
     for _, start, end in matcher(doc):
         span = doc[start:end]
@@ -131,16 +144,17 @@ def _extract_wordnet_idioms(doc, wordnet_idioms: set[str]) -> list[ExpressionIte
         if not lemma:
             continue
         normalized = lemma.lower()
-        if normalized not in wordnet_idioms:
+        canonical = idiom_lookup.get(normalized)
+        if not canonical:
             continue
         items.append(
             ExpressionItem(
                 text=span.text,
-                lemma=normalized,
+                lemma=canonical,
                 kind="idiom",
                 start=span.start_char,
                 end=span.end_char,
-                key=f"{normalized}|idiom",
+                key=f"{canonical}|idiom",
                 source="wordnet_phrase_matcher",
                 wordnet=True,
             )
@@ -172,6 +186,45 @@ def _token_lemma_lower(token) -> str:
 def _span_like_text(tokens) -> str:
     ordered = sorted(tokens, key=lambda token: token.i)
     return " ".join(token.text for token in ordered)
+
+
+def _build_idiom_lookup(idioms: set[str]) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for idiom in idioms:
+        canonical = str(idiom or "").strip().lower()
+        if not canonical:
+            continue
+        lookup.setdefault(canonical, canonical)
+        for variant in _phrase_inflection_variants(canonical):
+            lookup.setdefault(variant, canonical)
+    return lookup
+
+
+def _phrase_inflection_variants(phrase: str) -> set[str]:
+    tokens = [token for token in str(phrase or "").strip().lower().split() if token]
+    if not tokens:
+        return set()
+    option_groups = [_token_inflection_options(token) for token in tokens]
+    return {" ".join(combo) for combo in product(*option_groups)}
+
+
+def _token_inflection_options(token: str) -> set[str]:
+    options = {token}
+    if not token.isalpha() or len(token) <= 3:
+        return options
+    singular = _naive_singular(token)
+    options.add(singular)
+    return {option for option in options if option}
+
+
+def _naive_singular(token: str) -> str:
+    if token.endswith("ies") and len(token) > 3:
+        return f"{token[:-3]}y"
+    if token.endswith("es") and len(token) > 3 and token[-3] in ("s", "x", "z"):
+        return token[:-2]
+    if token.endswith("s") and not token.endswith("ss") and len(token) > 3:
+        return token[:-1]
+    return token
 
 
 @lru_cache(maxsize=1)
@@ -223,7 +276,11 @@ def _load_dependency_matcher():
             "LEFT_ID": "verb",
             "REL_OP": ">",
             "RIGHT_ID": "particle",
-            "RIGHT_ATTRS": {"DEP": "prt"},
+            "RIGHT_ATTRS": {
+                "POS": {"IN": ["ADP", "ADV", "PART"]},
+                "DEP": {"IN": [_PHRASAL_DEP_STRICT, *_PHRASAL_RELAXED_DEPS]},
+                "LEMMA": {"IN": sorted(_PHRASAL_PARTICLES)},
+            },
         },
     ]
     matcher.add("PHRASAL_VERB", [pattern])
@@ -244,11 +301,24 @@ def _load_idiom_lemma_matcher():
         return None
 
     matcher = Matcher(nlp.vocab, validate=False)
-    patterns = [[{"LEMMA": token} for token in phrase.split()] for phrase in sorted(idioms)]
+    patterns = [
+        [
+            _idiom_match_token_pattern(token)
+            for token in phrase.split()
+        ]
+        for phrase in sorted(idioms)
+    ]
     if not patterns:
         return None
     matcher.add("WORDNET_IDIOM", patterns)
     return matcher
+
+
+def _idiom_match_token_pattern(token: str) -> dict[str, object]:
+    options = sorted(_token_inflection_options(token))
+    if len(options) == 1:
+        return {"LEMMA": options[0]}
+    return {"LEMMA": {"IN": options}}
 
 
 @lru_cache(maxsize=1)
@@ -277,7 +347,11 @@ def _load_wordnet_phrase_inventory() -> tuple[set[str], set[str]]:
             if synset.pos() == "v" and len(tokens) in (2, 3) and tokens[-1] in _PHRASAL_PARTICLES:
                 phrasal.add(phrase)
             else:
-                idioms.add(phrase)
+                # Two-token WordNet phrases are often compositional collocations
+                # ("forest fire", "and then") and create many false-positive idioms.
+                if len(tokens) >= 3:
+                    idioms.add(phrase)
+    idioms.update(_IDIOM_FALLBACK_PHRASES)
     return phrasal, idioms
 
 

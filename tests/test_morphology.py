@@ -128,3 +128,67 @@ def test_analyze_english_text_uses_fallback_when_annotation_mismatch():
     )
     assert payload["items"][0]["upos"] == "X"
     assert payload["items"][0]["key"] == "foo|x"
+
+
+def test_analyze_english_text_supports_diverse_upos_word_types():
+    tokens = [
+        RawToken("Wow", 0, 3, False, False, False),
+        RawToken("I", 4, 5, False, False, False),
+        RawToken("can", 6, 9, False, False, False),
+        RawToken("not", 10, 13, False, False, False),
+        RawToken("write", 14, 19, False, False, False),
+        RawToken("2", 20, 21, False, False, True),
+        RawToken("the", 22, 25, False, False, False),
+        RawToken("clean", 26, 31, False, False, False),
+        RawToken("tests", 32, 37, False, False, False),
+        RawToken("in", 38, 40, False, False, False),
+        RawToken("Python", 41, 47, False, False, False),
+        RawToken("and", 48, 51, False, False, False),
+        RawToken("because", 52, 59, False, False, False),
+        RawToken("they", 60, 64, False, False, False),
+        RawToken("work", 65, 69, False, False, False),
+        RawToken(".", 69, 70, False, True, False),
+    ]
+
+    annotations = [
+        TokenAnnotation("wow", "INTJ", {}),
+        TokenAnnotation("I", "PRON", {}),
+        TokenAnnotation("can", "VERB", {}),
+        TokenAnnotation("not", "PART", {}),
+        TokenAnnotation("write", "VERB", {}),
+        TokenAnnotation("2", "NUM", {}),
+        TokenAnnotation("the", "DET", {}),
+        TokenAnnotation("clean", "ADJ", {}),
+        TokenAnnotation("test", "NOUN", {}),
+        TokenAnnotation("in", "ADP", {}),
+        TokenAnnotation("Python", "PROPN", {}),
+        TokenAnnotation("and", "CCONJ", {}),
+        TokenAnnotation("because", "SCONJ", {}),
+        TokenAnnotation("they", "PRON", {}),
+        TokenAnnotation("work", "VERB", {}),
+        TokenAnnotation(".", "PUNCT", {}),
+    ]
+
+    payload = analyze_english_text(
+        "Wow I can not write 2 the clean tests in Python and because they work.",
+        tokenizer=lambda _: tokens,
+        annotator=lambda *_: annotations,
+    )
+
+    assert [item["upos"] for item in payload["items"]] == [
+        "INTJ",
+        "PRON",
+        "VERB",
+        "PART",
+        "VERB",
+        "NUM",
+        "DET",
+        "ADJ",
+        "NOUN",
+        "ADP",
+        "PROPN",
+        "CCONJ",
+        "SCONJ",
+        "PRON",
+        "VERB",
+    ]
