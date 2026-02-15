@@ -717,34 +717,47 @@ class MorphologyRepository:
         dataset: str = "lexemes",
         output_dir: str = "outputs",
     ) -> str | None:
-        if not self.enabled or not self.db_path or not os.path.isfile(self.db_path):
-            return None
-        export_dir = self._resolve_vocabulary_export_dir(output_dir)
-        normalized_dataset = (dataset or "lexemes").strip().lower()
-        if normalized_dataset in ("pos_table", "upos_table", "parts_of_speech"):
-            return self._export_pos_table_csv(export_dir)
-        table_name = self._table_name_for_dataset(normalized_dataset)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{table_name}_{timestamp}.csv"
-        csv_path = os.path.join(export_dir, filename)
+        return self._export_dataset_file(
+            dataset=dataset,
+            output_dir=output_dir,
+            file_format="csv",
+        )
 
-        with self._db_lock:
-            connection = None
-            try:
-                connection = sqlite3.connect(self.db_path)
-                cursor = connection.execute(f'SELECT * FROM "{table_name}" ORDER BY ROWID')
-                headers = [description[0] for description in cursor.description or []]
-                rows = cursor.fetchall()
-                if not rows:
-                    return None
-                with open(csv_path, "w", newline="", encoding="utf-8-sig") as handle:
-                    writer = csv.writer(handle)
-                    writer.writerow(headers)
-                    writer.writerows(rows)
-                return csv_path
-            finally:
-                if connection is not None:
-                    connection.close()
+    def export_txt(
+        self,
+        *,
+        dataset: str = "lexemes",
+        output_dir: str = "outputs",
+    ) -> str | None:
+        return self._export_dataset_file(
+            dataset=dataset,
+            output_dir=output_dir,
+            file_format="txt",
+        )
+
+    def export_word_table(
+        self,
+        *,
+        dataset: str = "lexemes",
+        output_dir: str = "outputs",
+    ) -> str | None:
+        """Backward-compatible alias for Excel export."""
+        return self.export_excel(
+            dataset=dataset,
+            output_dir=output_dir,
+        )
+
+    def export_excel(
+        self,
+        *,
+        dataset: str = "lexemes",
+        output_dir: str = "outputs",
+    ) -> str | None:
+        return self._export_dataset_file(
+            dataset=dataset,
+            output_dir=output_dir,
+            file_format="xlsx",
+        )
 
     def export_spreadsheet(
         self,
@@ -752,29 +765,60 @@ class MorphologyRepository:
         dataset: str = "lexemes",
         output_dir: str = "outputs",
     ) -> str | None:
+        return self._export_dataset_file(
+            dataset=dataset,
+            output_dir=output_dir,
+            file_format="ods",
+        )
+
+    def _export_dataset_file(
+        self,
+        *,
+        dataset: str = "lexemes",
+        output_dir: str = "outputs",
+        file_format: str = "ods",
+    ) -> str | None:
         if not self.enabled or not self.db_path or not os.path.isfile(self.db_path):
             return None
-        export_dir = self._resolve_vocabulary_export_dir(output_dir)
-        normalized_dataset = (dataset or "lexemes").strip().lower()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        normalized_format = str(file_format or "ods").strip().lower().lstrip(".")
+        if normalized_format not in {"ods", "csv", "txt", "xlsx"}:
+            raise ValueError(f"Unsupported morphology export format: {file_format}")
 
+        export_dir = self._resolve_vocabulary_export_dir(output_dir)
+        table_name, sheet_name, headers, rows = self._build_export_dataset(dataset)
+        if not rows:
+            return None
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = os.path.join(
+            export_dir,
+            f"{table_name}_{timestamp}.{normalized_format}",
+        )
+
+        if normalized_format == "csv":
+            self._write_csv(headers, rows, output_path)
+            return output_path
+        if normalized_format == "txt":
+            self._write_txt(headers, rows, output_path)
+            return output_path
+        if normalized_format == "xlsx":
+            self._write_xlsx(headers, rows, output_path, sheet_name=sheet_name)
+            return output_path
+        self._write_ods(headers, rows, output_path, sheet_name=sheet_name)
+        return output_path
+
+    def _build_export_dataset(
+        self,
+        dataset: str,
+    ) -> tuple[str, str, list[str], list[list[str]]]:
+        normalized_dataset = (dataset or "lexemes").strip().lower()
         if normalized_dataset in ("pos_table", "upos_table", "parts_of_speech"):
             headers, rows = self._build_pos_table_dataset()
-            if not rows:
-                return None
-            filename = f"{self.table_prefix}pos_table_{timestamp}.ods"
-            output_path = os.path.join(export_dir, filename)
-            self._write_ods(headers, rows, output_path, sheet_name="POS Table")
-            return output_path
+            return f"{self.table_prefix}general_table", "General Table", headers, rows
 
         table_name = self._table_name_for_dataset(normalized_dataset)
         headers, rows = self._query_table_rows(table_name)
-        if not rows:
-            return None
-        filename = f"{table_name}_{timestamp}.ods"
-        output_path = os.path.join(export_dir, filename)
-        self._write_ods(headers, rows, output_path, sheet_name=table_name)
-        return output_path
+        return table_name, table_name, headers, rows
 
     def _write_ods(
         self,
@@ -813,34 +857,50 @@ class MorphologyRepository:
         document.spreadsheet.addElement(table)
         document.save(output_path, addsuffix=False)
 
-    def _export_pos_table_csv(self, output_dir: str) -> str | None:
-        self._ensure_dir(output_dir)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{self.table_prefix}pos_table_{timestamp}.csv"
-        csv_path = os.path.join(output_dir, filename)
+    def _write_csv(
+        self,
+        headers: list[str],
+        rows: list[list[str]],
+        output_path: str,
+    ) -> None:
+        with open(output_path, "w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(headers)
+            writer.writerows(rows)
 
-        with self._db_lock:
-            connection = None
-            try:
-                connection = sqlite3.connect(self.db_path)
-                cursor = connection.execute(
-                    f'SELECT "upos", "lemma" FROM "{self.lexemes_table}" ORDER BY "upos", "lemma" COLLATE NOCASE'
-                )
-                entries = cursor.fetchall()
-                if not entries:
-                    return None
-                headers, rows = _build_pos_table_from_entries(entries)
-                if not rows:
-                    return None
+    def _write_txt(
+        self,
+        headers: list[str],
+        rows: list[list[str]],
+        output_path: str,
+    ) -> None:
+        with open(output_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle, delimiter="\t")
+            writer.writerow(headers)
+            writer.writerows(rows)
 
-                with open(csv_path, "w", newline="", encoding="utf-8-sig") as handle:
-                    writer = csv.writer(handle)
-                    writer.writerow(headers)
-                    writer.writerows(rows)
-                return csv_path
-            finally:
-                if connection is not None:
-                    connection.close()
+    def _write_xlsx(
+        self,
+        headers: list[str],
+        rows: list[list[str]],
+        output_path: str,
+        *,
+        sheet_name: str,
+    ) -> None:
+        try:
+            from openpyxl import Workbook
+        except Exception as exc:
+            raise RuntimeError(
+                "Excel export requires openpyxl. Install dependency and retry."
+            ) from exc
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = (sheet_name[:31] or "Sheet1")
+        worksheet.append([str(header) for header in headers])
+        for row_values in rows:
+            worksheet.append([str(value) for value in row_values[: len(headers)]])
+        workbook.save(output_path)
 
     def _segment_hash(self, segment_text: str) -> str:
         return hashlib.sha1(

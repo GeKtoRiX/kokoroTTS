@@ -1,6 +1,7 @@
-"""Gradio UI construction for the Kokoro TTS app."""
+﻿"""Gradio UI construction for the Kokoro TTS app."""
 from __future__ import annotations
 
+import inspect
 import json
 import os
 from typing import Any, Sequence
@@ -25,14 +26,36 @@ from ..domain.voice import (
 
 UI_PRIMARY_HUE = os.getenv("UI_PRIMARY_HUE", "green").strip() or "green"
 APP_THEME = gr.themes.Base(primary_hue=UI_PRIMARY_HUE)
+APP_CSS = """
+#runtime-mode-selector .wrap {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+#runtime-mode-selector .wrap > label {
+  width: 100%;
+}
+
+#main-layout {
+  align-items: flex-start;
+}
+
+#generate-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+  margin-bottom: 8px;
+}
+
+"""
 
 TOKEN_NOTE = (
-    "\n💡 Customize pronunciation with Markdown link syntax and /slashes/ like "
-    "`[Kokoro](/kˈOkəɹO/)`\n\n"
-    "💬 To adjust intonation, try punctuation `;:,.!?—…\"()“”` "
-    "or stress `ˈ` and `ˌ`\n\n"
-    "⬇️ Lower stress `[1 level](-1)` or `[2 levels](-2)`\n\n"
-    "⬆️ Raise stress 1 level `[or](+2)` 2 levels (only works on less stressed, usually short words)\n"
+    "\nCustomize pronunciation with Markdown link syntax and /slashes/ like "
+    "`[Kokoro](/k o k o r o/)`\n\n"
+    "To adjust intonation, try punctuation `;:,.!?\\\"()` and stress markers.\n\n"
+    "Lower stress: `[1 level](-1)` or `[2 levels](-2)`\n\n"
+    "Raise stress: `[or](+2)` (or +1 where supported)\n"
 )
 
 DIALOGUE_NOTE = (
@@ -41,6 +64,65 @@ DIALOGUE_NOTE = (
     "Use [pause=0.35] (or [pause=350ms], [pause=default]) to control pauses per segment.\n"
     "Mix voices with commas: [voice=af_heart,am_michael].\n"
 )
+
+
+RUNTIME_MODE_DEFAULT = "default"
+RUNTIME_MODE_TTS_MORPH = "tts_morph"
+RUNTIME_MODE_FULL = "full"
+RUNTIME_MODE_CHOICES: list[tuple[str, str]] = [
+    ("Default", RUNTIME_MODE_DEFAULT),
+    ("TTS + Morphology", RUNTIME_MODE_TTS_MORPH),
+    ("Full", RUNTIME_MODE_FULL),
+]
+
+
+def _tts_only_mode_status_text(enabled: bool) -> str:
+    if enabled:
+        return "TTS-only mode is ON: Morphology DB and LLM requests are disabled."
+    return "TTS-only mode is OFF: Morphology DB and LLM requests are enabled."
+
+
+def _llm_only_mode_status_text(enabled: bool, *, tts_only_enabled: bool) -> str:
+    if tts_only_enabled:
+        return "TTS + Morphology mode is overridden by TTS-only mode."
+    if enabled:
+        return "TTS + Morphology mode is ON: LLM requests are disabled, Morphology DB stays enabled."
+    return "TTS + Morphology mode is OFF: LLM requests are enabled."
+
+
+def _runtime_mode_from_flags(*, tts_only_enabled: bool, llm_only_enabled: bool) -> str:
+    if tts_only_enabled:
+        return RUNTIME_MODE_DEFAULT
+    if llm_only_enabled:
+        return RUNTIME_MODE_TTS_MORPH
+    return RUNTIME_MODE_FULL
+
+
+def _normalize_runtime_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == RUNTIME_MODE_TTS_MORPH:
+        return RUNTIME_MODE_TTS_MORPH
+    if normalized == RUNTIME_MODE_DEFAULT:
+        return RUNTIME_MODE_DEFAULT
+    return RUNTIME_MODE_FULL
+
+
+def _runtime_mode_status_text(mode_value: Any) -> str:
+    mode = _normalize_runtime_mode(mode_value)
+    if mode == RUNTIME_MODE_DEFAULT:
+        return "Default mode is active: TTS only."
+    if mode == RUNTIME_MODE_TTS_MORPH:
+        return "TTS + Morphology mode is active."
+    return "Full mode is active."
+
+
+def _runtime_mode_tab_visibility(mode_value: Any) -> tuple[bool, bool]:
+    mode = _normalize_runtime_mode(mode_value)
+    if mode == RUNTIME_MODE_DEFAULT:
+        return False, False
+    if mode == RUNTIME_MODE_TTS_MORPH:
+        return False, True
+    return True, True
 
 
 def _normalize_morph_dataset(dataset: Any) -> str:
@@ -58,6 +140,27 @@ def _extract_morph_headers(table_update: Any) -> list[str]:
 
 def _morph_primary_key(dataset: Any) -> str:
     return morphology_primary_key(dataset)
+
+
+def _supports_export_format_arg(callback: Any) -> bool:
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        return True
+
+    parameters = list(signature.parameters.values())
+    if any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in parameters):
+        return True
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters):
+        return True
+    positional = [
+        param
+        for param in parameters
+        if param.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    if len(positional) >= 2:
+        return True
+    return any(param.name == "file_format" for param in parameters)
 
 
 def _coerce_int_value(value: Any, default: int = 0) -> int:
@@ -307,6 +410,7 @@ def _wire_morphology_events(
     export_csv_btn,
     export_morphology_sheet,
     export_csv_dataset,
+    export_csv_format,
     export_csv_file,
     export_csv_status,
     morph_db_refresh_btn,
@@ -336,7 +440,7 @@ def _wire_morphology_events(
     if export_csv_btn is not None:
         export_csv_btn.click(
             fn=export_morphology_sheet,
-            inputs=[export_csv_dataset],
+            inputs=[export_csv_dataset, export_csv_format],
             outputs=[export_csv_file, export_csv_status],
             api_name=False,
         )
@@ -530,6 +634,10 @@ def create_gradio_app(
     import_pronunciation_rules=None,
     export_pronunciation_rules=None,
     build_lesson_for_tts=None,
+    set_tts_only_mode=None,
+    set_llm_only_mode=None,
+    tts_only_mode_default: bool = False,
+    llm_only_mode_default: bool = False,
     history_service,
     choices,
 ) -> tuple[gr.Blocks, bool]:
@@ -548,6 +656,7 @@ def create_gradio_app(
     clear_history_btn = None
     export_csv_btn = None
     export_csv_dataset = None
+    export_csv_format = None
     export_csv_file = None
     export_csv_status = None
     out_audio = None
@@ -567,6 +676,8 @@ def create_gradio_app(
     pronunciation_import_btn = None
     pronunciation_export_btn = None
     pronunciation_export_file = None
+    runtime_mode_selector = None
+    runtime_mode_status = None
     llm_raw_text = None
     llm_base_url = None
     llm_api_key = None
@@ -579,6 +690,8 @@ def create_gradio_app(
     llm_to_tts_btn = None
     llm_output_text = None
     llm_status = None
+    lesson_tab = None
+    morphology_tab = None
     morph_db_dataset = None
     morph_db_limit = None
     morph_db_offset = None
@@ -595,16 +708,31 @@ def create_gradio_app(
     morph_db_delete_armed_state = None
 
     stream_note = [
-        "⚠️ There is an unknown Gradio bug that might yield no audio the first time you click `Stream`."
+        "There is a known Gradio issue that may produce no audio the first time you click `Stream`."
     ]
     if config.char_limit is not None:
-        stream_note.append(f"✂️ Each stream is capped at {config.char_limit} characters.")
+        stream_note.append(f"Each stream is capped at {config.char_limit} characters.")
         stream_note.append(
-            "🚀 Want more characters? You can "
+            "Need more characters? You can "
             "[use Kokoro directly](https://huggingface.co/hexgrad/Kokoro-82M#usage) "
             "or duplicate this space:"
         )
     stream_note = "\n\n".join(stream_note)
+    export_supports_format = bool(
+        callable(export_morphology_sheet) and _supports_export_format_arg(export_morphology_sheet)
+    )
+    runtime_tts_only_enabled = bool(tts_only_mode_default)
+    runtime_llm_only_enabled = bool(llm_only_mode_default)
+    if not runtime_tts_only_enabled and not runtime_llm_only_enabled:
+        # Prefer plain TTS by default unless a mode is explicitly enabled.
+        runtime_mode_value = RUNTIME_MODE_DEFAULT
+        runtime_tts_only_enabled = True
+    else:
+        runtime_mode_value = _runtime_mode_from_flags(
+            tts_only_enabled=runtime_tts_only_enabled,
+            llm_only_enabled=runtime_llm_only_enabled,
+        )
+    lesson_tab_visible, morphology_tab_visible = _runtime_mode_tab_visibility(runtime_mode_value)
 
     def toggle_mix_controls(enabled):
         return gr.update(visible=enabled), gr.update(interactive=not enabled)
@@ -644,6 +772,59 @@ def create_gradio_app(
 
     def clear_stream_output():
         return None
+
+    def set_tts_only_mode_wrapped(enabled):
+        nonlocal runtime_tts_only_enabled
+        runtime_tts_only_enabled = bool(enabled)
+        if not callable(set_tts_only_mode):
+            return _tts_only_mode_status_text(runtime_tts_only_enabled)
+        status = set_tts_only_mode(runtime_tts_only_enabled)
+        return str(status or _tts_only_mode_status_text(runtime_tts_only_enabled))
+
+    def set_llm_only_mode_wrapped(enabled):
+        nonlocal runtime_llm_only_enabled
+        runtime_llm_only_enabled = bool(enabled)
+        if not callable(set_llm_only_mode):
+            return _llm_only_mode_status_text(
+                runtime_llm_only_enabled,
+                tts_only_enabled=runtime_tts_only_enabled,
+            )
+        status = set_llm_only_mode(runtime_llm_only_enabled)
+        return str(
+            status
+            or _llm_only_mode_status_text(
+                runtime_llm_only_enabled,
+                tts_only_enabled=runtime_tts_only_enabled,
+            )
+        )
+
+    def set_runtime_mode_wrapped(mode_value):
+        selected_mode = _normalize_runtime_mode(mode_value)
+        if selected_mode == RUNTIME_MODE_DEFAULT:
+            set_tts_only_mode_wrapped(True)
+            set_llm_only_mode_wrapped(False)
+        elif selected_mode == RUNTIME_MODE_TTS_MORPH:
+            set_tts_only_mode_wrapped(False)
+            set_llm_only_mode_wrapped(True)
+        else:
+            set_tts_only_mode_wrapped(False)
+            set_llm_only_mode_wrapped(False)
+        lesson_visible, morph_visible = _runtime_mode_tab_visibility(selected_mode)
+        return (
+            _runtime_mode_status_text(selected_mode),
+            gr.update(visible=lesson_visible),
+            gr.update(visible=morph_visible),
+        )
+
+    # Apply selected runtime mode once during UI assembly to keep backend flags in sync.
+    _ = set_runtime_mode_wrapped(runtime_mode_value)
+
+    def export_morphology_sheet_wrapped(dataset, export_format):
+        if not callable(export_morphology_sheet):
+            return None, "Morphology DB export is not configured."
+        if export_supports_format:
+            return export_morphology_sheet(dataset, export_format)
+        return export_morphology_sheet(dataset)
 
     def morph_db_view_wrapped(dataset, limit, offset):
         table_update, status = morphology_db_view(dataset, limit, offset)
@@ -694,26 +875,23 @@ def create_gradio_app(
     api_open = config.space_id != "hexgrad/Kokoro-TTS"
     api_name = None if api_open else False
     logger.debug("API_OPEN=%s", api_open)
-    with gr.Blocks(theme=APP_THEME) as app:
+    with gr.Blocks(theme=APP_THEME, css=APP_CSS) as app:
         history_state = gr.State([])
-        with gr.Row():
+        with gr.Row(elem_id="main-layout"):
             with gr.Column():
-                stream_cap = "∞" if config.char_limit is None else config.char_limit
-                text = gr.Textbox(
-                    label="Input Text",
-                    info=(
-                        f"Up to ~{config.max_chunk_chars} characters per chunk for Generate, "
-                        f"or {stream_cap} characters per Stream. Use | to split into "
-                        "separate files. Use [voice=af_heart], [style=narrator], [pause=0.3]."
-                    ),
-                )
-                language = gr.Dropdown(
-                    LANGUAGE_CHOICES,
-                    value=default_lang,
-                    label="Language",
-                    info="Filters voices by language. Dialog tags can still override per segment.",
-                )
-                with gr.Row():
+                with gr.Accordion("Input", open=True):
+                    text = gr.Textbox(
+                        label="Input Text",
+                        lines=6,
+                        min_width=360,
+                        info="Use | to split into separate files. Use [voice=af_heart], [style=narrator], [pause=0.3].",
+                    )
+                    language = gr.Dropdown(
+                        LANGUAGE_CHOICES,
+                        value=default_lang,
+                        label="Language",
+                        info="Filters voices by language. Dialog tags can still override per segment.",
+                    )
                     voice = gr.Dropdown(
                         default_voice_choices,
                         value=default_voice,
@@ -721,46 +899,48 @@ def create_gradio_app(
                         info="Quality and availability vary by language",
                     )
                     mix_enabled = gr.Checkbox(label="Mix voices", value=False)
-                voice_mix = gr.Dropdown(
-                    default_voice_choices,
-                    value=[],
-                    multiselect=True,
-                    label="Voice mix",
-                    info="Select multiple voices to average",
-                    visible=False,
-                )
-                with gr.Row():
-                    use_gpu = gr.Dropdown(
-                        [("ZeroGPU 🚀", True), ("CPU 🐌", False)],
-                        value=cuda_available,
-                        label="Hardware",
-                        info="GPU is usually faster, but has a usage quota",
-                        interactive=cuda_available,
+                    voice_mix = gr.Dropdown(
+                        default_voice_choices,
+                        value=[],
+                        multiselect=True,
+                        label="Voice mix",
+                        info="Select multiple voices to average",
+                        visible=False,
                     )
-                speed = gr.Slider(minimum=0.5, maximum=2, value=1, step=0.1, label="Speed")
-                style_preset = gr.Dropdown(
-                    STYLE_PRESET_CHOICES,
-                    value=DEFAULT_STYLE_PRESET,
-                    label="Style preset",
-                    info=(
-                        "Kokoro has no native emotion controls. Presets tune runtime speed/pause "
-                        "and pass style to the pipeline only if supported."
-                    ),
-                )
-                pause_between = gr.Slider(
-                    minimum=0,
-                    maximum=2,
-                    value=0,
-                    step=0.1,
-                    label="Pause between sentences (s)",
-                    info="Applies to Generate and Stream output",
-                )
-                output_format = gr.Dropdown(
-                    OUTPUT_FORMATS,
-                    value=default_output_format,
-                    label="Output format",
-                    info="Applies to saved files in History/outputs (mp3/ogg require ffmpeg)",
-                )
+                with gr.Accordion("Hardware", open=False):
+                    with gr.Row():
+                        use_gpu = gr.Dropdown(
+                            [("ZeroGPU", True), ("CPU", False)],
+                            value=cuda_available,
+                            label="Hardware",
+                            info="GPU is usually faster, but has a usage quota",
+                            interactive=cuda_available,
+                        )
+                with gr.Accordion("Generation settings", open=False):
+                    speed = gr.Slider(minimum=0.5, maximum=2, value=0.8, step=0.1, label="Speed")
+                    style_preset = gr.Dropdown(
+                        STYLE_PRESET_CHOICES,
+                        value=DEFAULT_STYLE_PRESET,
+                        label="Style preset",
+                        info=(
+                            "Kokoro has no native emotion controls. Presets tune runtime speed/pause "
+                            "and pass style to the pipeline only if supported."
+                        ),
+                    )
+                    pause_between = gr.Slider(
+                        minimum=0,
+                        maximum=2,
+                        value=0.3,
+                        step=0.1,
+                        label="Pause between sentences (s)",
+                        info="Applies to Generate and Stream output",
+                    )
+                    output_format = gr.Dropdown(
+                        OUTPUT_FORMATS,
+                        value=default_output_format,
+                        label="Output format",
+                        info="Applies to saved files in History/outputs (mp3/ogg require ffmpeg)",
+                    )
                 with gr.Accordion("Text normalization", open=False):
                     normalize_times_toggle = gr.Checkbox(
                         label="Normalize times (12:30 -> twelve thirty)",
@@ -770,12 +950,25 @@ def create_gradio_app(
                         label="Normalize numbers (0-9999, decimals, %, ordinals)",
                         value=config.normalize_numbers,
                     )
+                with gr.Accordion("Runtime mode", open=False):
+                    runtime_mode_selector = gr.Radio(
+                        RUNTIME_MODE_CHOICES,
+                        value=runtime_mode_value,
+                        label="Mode",
+                        interactive=callable(set_tts_only_mode) or callable(set_llm_only_mode),
+                        elem_id="runtime-mode-selector",
+                    )
+                    runtime_mode_status = gr.Textbox(
+                        label="Mode status",
+                        value=_runtime_mode_status_text(runtime_mode_value),
+                        interactive=False,
+                    )
                 with gr.Accordion("Dialog tags", open=False):
                     gr.Markdown(DIALOGUE_NOTE)
                 with gr.Accordion("Pronunciation dictionary", open=False):
                     gr.Markdown(
                         "Persistent JSON rules by language code (`a,b,e,f,h,i,j,p,z`). "
-                        "Example: `{ \"a\": { \"OpenAI\": \"oʊpənˈeɪ aɪ\" } }`"
+                        "Example: `{ \"a\": { \"OpenAI\": \"OW P AH N EY AY\" } }`"
                     )
                     pronunciation_rules_json = gr.Textbox(
                         label="Rules JSON",
@@ -823,50 +1016,63 @@ def create_gradio_app(
             with gr.Column():
                 with gr.Tabs():
                     with gr.Tab("Generate"):
-                        out_audio = gr.Audio(
-                            label="Output Audio",
-                            interactive=False,
-                            streaming=False,
-                            autoplay=True,
-                        )
-                        generate_btn = gr.Button("Generate", variant="primary")
-                        if config.history_limit > 0:
-                            with gr.Accordion("History", open=False):
-                                clear_history_btn = gr.Button("Clear history", variant="secondary")
-                                for index in range(1, config.history_limit + 1):
-                                    history_audios.append(
-                                        gr.Audio(
-                                            label=f"History {index}",
-                                            interactive=False,
-                                            streaming=False,
-                                        )
-                                    )
-                        with gr.Accordion("Output Tokens", open=True):
-                            out_ps = gr.Textbox(
+                        with gr.Column(elem_id="generate-stack"):
+                            out_audio = gr.Audio(
+                                label="Output Audio",
                                 interactive=False,
-                                show_label=False,
-                                info="Tokens used to generate the audio, up to 510 context length.",
+                                streaming=False,
+                                autoplay=True,
                             )
-                            tokenize_btn = gr.Button("Tokenize", variant="secondary")
-                            gr.Markdown(TOKEN_NOTE)
-                            predict_btn = gr.Button("Predict", variant="secondary", visible=False)
-                        if config.morph_db_enabled and callable(export_morphology_sheet):
-                            with gr.Accordion("Morphology DB Export", open=False):
-                                gr.Markdown("Download LibreOffice Calc spreadsheet (.ods).")
-                                export_csv_dataset = gr.Dropdown(
-                                    [
-                                        ("Lexemes", "lexemes"),
-                                        ("Token occurrences", "occurrences"),
-                                        ("Expressions (phrasal verbs and idioms)", "expressions"),
-                                        ("LM reviews", "reviews"),
-                                        ("POS table (columns by part of speech)", "pos_table"),
-                                    ],
-                                    value="lexemes",
-                                    label="Dataset",
+                            generate_btn = gr.Button("Generate", variant="primary")
+                            if config.history_limit > 0:
+                                with gr.Accordion("History", open=False):
+                                    clear_history_btn = gr.Button("Clear history", variant="secondary")
+                                    for index in range(1, config.history_limit + 1):
+                                        history_audios.append(
+                                            gr.Audio(
+                                                label=f"History {index}",
+                                                interactive=False,
+                                                streaming=False,
+                                            )
+                                        )
+                            with gr.Accordion("Output Tokens", open=False):
+                                out_ps = gr.Textbox(
+                                    interactive=False,
+                                    show_label=False,
+                                    info="Tokens used to generate the audio, up to 510 context length.",
                                 )
-                                export_csv_btn = gr.Button("Download ODS", variant="secondary")
-                                export_csv_file = gr.File(label="ODS file", interactive=False)
-                                export_csv_status = gr.Textbox(label="Export status", interactive=False)
+                                tokenize_btn = gr.Button("Tokenize", variant="secondary")
+                                gr.Markdown(TOKEN_NOTE)
+                                predict_btn = gr.Button("Predict", variant="secondary", visible=False)
+                            if config.morph_db_enabled and callable(export_morphology_sheet):
+                                with gr.Accordion("Morphology DB Export", open=False):
+                                    gr.Markdown(
+                                        "Export selected dataset as `.ods`, `.csv`, `.txt`, or `.xlsx`."
+                                    )
+                                    export_csv_dataset = gr.Dropdown(
+                                        [
+                                            ("Lexemes", "lexemes"),
+                                            ("Token occurrences", "occurrences"),
+                                            ("Expressions (phrasal verbs and idioms)", "expressions"),
+                                            ("LM reviews", "reviews"),
+                                            ("General table", "pos_table"),
+                                        ],
+                                        value="lexemes",
+                                        label="Dataset",
+                                    )
+                                    export_csv_format = gr.Dropdown(
+                                        [
+                                            ("ODS spreadsheet (.ods)", "ods"),
+                                            ("CSV (.csv)", "csv"),
+                                            ("Plain text table (.txt)", "txt"),
+                                            ("Microsoft Excel (.xlsx)", "xlsx"),
+                                        ],
+                                        value="ods",
+                                        label="Format",
+                                    )
+                                    export_csv_btn = gr.Button("Export file", variant="secondary")
+                                    export_csv_file = gr.File(label="Exported file", interactive=False)
+                                    export_csv_status = gr.Textbox(label="Export status", interactive=False)
                     with gr.Tab("Stream"):
                         out_stream = gr.Audio(
                             label="Output Audio Stream",
@@ -880,7 +1086,7 @@ def create_gradio_app(
                         with gr.Accordion("Note", open=True):
                             gr.Markdown(stream_note)
                             gr.DuplicateButton()
-                    with gr.Tab("Lesson Builder (LLM)"):
+                    with gr.Tab("Lesson Builder (LLM)", visible=lesson_tab_visible) as lesson_tab:
                         gr.Markdown(
                             "Transform raw material into an English lesson script with detailed "
                             "exercise explanations for TTS narration."
@@ -955,7 +1161,7 @@ def create_gradio_app(
                             label="LLM status",
                             interactive=False,
                         )
-                    with gr.Tab("Morphology DB"):
+                    with gr.Tab("Morphology DB", visible=morphology_tab_visible) as morphology_tab:
                         gr.Markdown(
                             "Simple CRUD for `morphology.sqlite3`: browse rows, add JSON row, "
                             "select a row in the table, then click Update/Delete."
@@ -1096,8 +1302,9 @@ def create_gradio_app(
         )
         _wire_morphology_events(
             export_csv_btn=export_csv_btn,
-            export_morphology_sheet=export_morphology_sheet,
+            export_morphology_sheet=export_morphology_sheet_wrapped,
             export_csv_dataset=export_csv_dataset,
+            export_csv_format=export_csv_format,
             export_csv_file=export_csv_file,
             export_csv_status=export_csv_status,
             morph_db_refresh_btn=morph_db_refresh_btn,
@@ -1152,6 +1359,19 @@ def create_gradio_app(
             llm_to_tts_btn=llm_to_tts_btn,
             text=text,
         )
+        if (
+            runtime_mode_selector is not None
+            and runtime_mode_status is not None
+            and lesson_tab is not None
+            and morphology_tab is not None
+        ):
+            runtime_mode_selector.change(
+                fn=set_runtime_mode_wrapped,
+                inputs=[runtime_mode_selector],
+                outputs=[runtime_mode_status, lesson_tab, morphology_tab],
+                api_name=False,
+                queue=False,
+            )
 
     logger.debug("UI wiring complete")
     return app, api_open

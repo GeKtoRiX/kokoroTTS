@@ -89,6 +89,10 @@ def initialize_app_services(
     import_pronunciation_rules,
     export_pronunciation_rules,
     build_lesson_for_tts,
+    set_tts_only_mode=None,
+    set_llm_only_mode=None,
+    tts_only_mode_default: bool = False,
+    llm_only_mode_default: bool = False,
     choices: Mapping[str, str],
 ) -> AppServices:
     """Construct all runtime services and return a typed service bundle."""
@@ -188,6 +192,10 @@ def initialize_app_services(
         import_pronunciation_rules=import_pronunciation_rules,
         export_pronunciation_rules=export_pronunciation_rules,
         build_lesson_for_tts=build_lesson_for_tts,
+        set_tts_only_mode=set_tts_only_mode,
+        set_llm_only_mode=set_llm_only_mode,
+        tts_only_mode_default=tts_only_mode_default,
+        llm_only_mode_default=llm_only_mode_default,
         history_service=history_service,
         choices=choices,
     )

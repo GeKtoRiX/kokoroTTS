@@ -48,7 +48,11 @@ class KokoroState:
         self.ui_hooks = ui_hooks
         self.morphology_repository = morphology_repository
         self.last_saved_paths: list[str] = []
+        self.aux_features_enabled = True
         self._pipeline_style_param_cache: dict[type, str | None] = {}
+
+    def set_aux_features_enabled(self, enabled: bool) -> None:
+        self.aux_features_enabled = bool(enabled)
 
     def _persist_morphology(
         self,
@@ -56,6 +60,8 @@ class KokoroState:
         *,
         source: str,
     ) -> None:
+        if not self.aux_features_enabled:
+            return
         if self.morphology_repository is None:
             return
         morph_parts = [

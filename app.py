@@ -96,11 +96,13 @@ from kokoro_tts.ui.gradio_app import (
 
 CONFIG = load_config()
 logger = setup_logging(CONFIG)
-SKIP_APP_INIT = os.getenv("KOKORO_SKIP_APP_INIT", "").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+SKIP_APP_INIT = _env_flag("KOKORO_SKIP_APP_INIT")
 
 BASE_DIR = os.path.dirname(__file__)
 configure_ffmpeg(logger, BASE_DIR)
@@ -196,6 +198,77 @@ APP_STATE = None
 app = None
 API_OPEN = None
 SSR_MODE = os.getenv("KOKORO_SSR_MODE", "").strip().lower() in ("1", "true", "yes")
+TTS_ONLY_MODE = _env_flag("TTS_ONLY_MODE")
+LLM_ONLY_MODE = _env_flag("LLM_ONLY_MODE")
+MORPH_DEFAULT_EXPRESSION_EXTRACTOR = None
+MORPH_DEFAULT_LM_VERIFY_ENABLED = None
+
+
+def _tts_only_status_message() -> str:
+    if TTS_ONLY_MODE:
+        return "TTS-only mode is enabled: Morphology DB writes and LLM requests are disabled."
+    return "TTS-only mode is disabled: Morphology DB writes and LLM requests are enabled."
+
+
+def _llm_only_status_message() -> str:
+    if TTS_ONLY_MODE:
+        return "TTS + Morphology mode is overridden by TTS-only mode."
+    if LLM_ONLY_MODE:
+        return "TTS + Morphology mode is enabled: LLM requests are disabled while Morphology DB stays enabled."
+    return "TTS + Morphology mode is disabled: LLM requests are enabled."
+
+
+def _llm_requests_disabled() -> bool:
+    return bool(TTS_ONLY_MODE or LLM_ONLY_MODE)
+
+
+def _apply_runtime_modes() -> None:
+    if APP_STATE is not None:
+        try:
+            APP_STATE.set_aux_features_enabled(not TTS_ONLY_MODE)
+        except Exception:
+            logger.exception("Failed to apply runtime mode to app state")
+
+    if MORPHOLOGY_REPOSITORY is None:
+        return
+
+    try:
+        if MORPH_DEFAULT_LM_VERIFY_ENABLED is None:
+            default_verify_enabled = bool(getattr(MORPHOLOGY_REPOSITORY, "lm_verify_enabled", False))
+        else:
+            default_verify_enabled = bool(MORPH_DEFAULT_LM_VERIFY_ENABLED)
+        llm_enabled = not _llm_requests_disabled()
+        MORPHOLOGY_REPOSITORY.lm_verify_enabled = bool(
+            default_verify_enabled
+            and llm_enabled
+            and callable(getattr(MORPHOLOGY_REPOSITORY, "lm_verifier", None))
+        )
+
+        default_extractor = MORPH_DEFAULT_EXPRESSION_EXTRACTOR
+        if default_extractor is None:
+            default_extractor = getattr(MORPHOLOGY_REPOSITORY, "expression_extractor", None)
+        if not llm_enabled and not TTS_ONLY_MODE:
+            MORPHOLOGY_REPOSITORY.expression_extractor = extract_english_expressions
+        elif default_extractor is not None:
+            MORPHOLOGY_REPOSITORY.expression_extractor = default_extractor
+    except Exception:
+        logger.exception("Failed to apply runtime mode to morphology repository")
+
+
+def set_tts_only_mode(enabled: bool) -> str:
+    global TTS_ONLY_MODE
+    TTS_ONLY_MODE = bool(enabled)
+    _apply_runtime_modes()
+    logger.info("TTS-only mode set to %s", TTS_ONLY_MODE)
+    return _tts_only_status_message()
+
+
+def set_llm_only_mode(enabled: bool) -> str:
+    global LLM_ONLY_MODE
+    LLM_ONLY_MODE = bool(enabled)
+    _apply_runtime_modes()
+    logger.info("TTS + Morphology mode set to %s", LLM_ONLY_MODE)
+    return _llm_only_status_message()
 
 
 def _model_manager_instance():
@@ -418,16 +491,43 @@ def generate_all(
     )
 
 
-def export_morphology_sheet(dataset: str = "lexemes"):
+def export_morphology_sheet(dataset: str = "lexemes", file_format: str = "ods"):
+    if TTS_ONLY_MODE:
+        return None, "TTS-only mode is enabled. Morphology DB export is disabled."
     if MORPHOLOGY_REPOSITORY is None:
         return None, "Morphology DB is not configured."
+    normalized_format = str(file_format or "ods").strip().lower().lstrip(".")
     try:
-        sheet_path = MORPHOLOGY_REPOSITORY.export_spreadsheet(
-            dataset=dataset,
-            output_dir=CONFIG.output_dir_abs,
-        )
+        if normalized_format == "csv":
+            sheet_path = MORPHOLOGY_REPOSITORY.export_csv(
+                dataset=dataset,
+                output_dir=CONFIG.output_dir_abs,
+            )
+        elif normalized_format == "txt":
+            sheet_path = MORPHOLOGY_REPOSITORY.export_txt(
+                dataset=dataset,
+                output_dir=CONFIG.output_dir_abs,
+            )
+        elif normalized_format in ("xlsx", "excel"):
+            sheet_path = MORPHOLOGY_REPOSITORY.export_excel(
+                dataset=dataset,
+                output_dir=CONFIG.output_dir_abs,
+            )
+        elif normalized_format in ("docx", "word"):
+            # Backward compatibility: old UI alias now points to Excel export.
+            sheet_path = MORPHOLOGY_REPOSITORY.export_excel(
+                dataset=dataset,
+                output_dir=CONFIG.output_dir_abs,
+            )
+        elif normalized_format in ("ods", "spreadsheet"):
+            sheet_path = MORPHOLOGY_REPOSITORY.export_spreadsheet(
+                dataset=dataset,
+                output_dir=CONFIG.output_dir_abs,
+            )
+        else:
+            return None, "Unsupported export format. Use ods, csv, txt, or xlsx."
     except Exception:
-        logger.exception("Morphology spreadsheet export failed")
+        logger.exception("Morphology export failed: format=%s", normalized_format)
         return None, "Export failed. Check logs for details."
     if not sheet_path:
         return None, "No rows available for export."
@@ -456,6 +556,8 @@ def _normalize_morph_dataset(dataset) -> str:
 
 
 def morphology_db_view(dataset="occurrences", limit=100, offset=0):
+    if TTS_ONLY_MODE:
+        return _empty_morphology_table_update(), "TTS-only mode is enabled. Morphology DB is disabled."
     if MORPHOLOGY_REPOSITORY is None:
         return _empty_morphology_table_update(), "Morphology DB is not configured."
     try:
@@ -475,6 +577,8 @@ def morphology_db_view(dataset="occurrences", limit=100, offset=0):
 
 
 def morphology_db_add(dataset, row_json, limit=100, offset=0):
+    if TTS_ONLY_MODE:
+        return _empty_morphology_table_update(), "TTS-only mode is enabled. Morphology DB is disabled."
     if MORPHOLOGY_REPOSITORY is None:
         return _empty_morphology_table_update(), "Morphology DB is not configured."
     if _normalize_morph_dataset(dataset) == "reviews":
@@ -494,6 +598,8 @@ def morphology_db_add(dataset, row_json, limit=100, offset=0):
 
 
 def morphology_db_update(dataset, row_id, row_json, limit=100, offset=0):
+    if TTS_ONLY_MODE:
+        return _empty_morphology_table_update(), "TTS-only mode is enabled. Morphology DB is disabled."
     if MORPHOLOGY_REPOSITORY is None:
         return _empty_morphology_table_update(), "Morphology DB is not configured."
     if _normalize_morph_dataset(dataset) == "reviews":
@@ -514,6 +620,8 @@ def morphology_db_update(dataset, row_id, row_json, limit=100, offset=0):
 
 
 def morphology_db_delete(dataset, row_id, limit=100, offset=0):
+    if TTS_ONLY_MODE:
+        return _empty_morphology_table_update(), "TTS-only mode is enabled. Morphology DB is disabled."
     if MORPHOLOGY_REPOSITORY is None:
         return _empty_morphology_table_update(), "Morphology DB is not configured."
     if _normalize_morph_dataset(dataset) == "reviews":
@@ -557,6 +665,10 @@ def build_lesson_for_tts(
     llm_timeout_seconds=None,
     llm_extra_instructions="",
 ):
+    if _llm_requests_disabled():
+        if TTS_ONLY_MODE:
+            return "", "TTS-only mode is enabled. LLM requests are disabled."
+        return "", "TTS + Morphology mode is enabled. LLM requests are disabled."
     raw_text = (raw_text or "").strip()
     if not raw_text:
         return "", "Please provide raw text."
@@ -633,6 +745,10 @@ if not SKIP_APP_INIT:
         import_pronunciation_rules=import_pronunciation_rules_json,
         export_pronunciation_rules=export_pronunciation_rules_json,
         build_lesson_for_tts=build_lesson_for_tts,
+        set_tts_only_mode=set_tts_only_mode,
+        set_llm_only_mode=set_llm_only_mode,
+        tts_only_mode_default=TTS_ONLY_MODE,
+        llm_only_mode_default=LLM_ONLY_MODE,
         choices=CHOICES,
     )
     MODEL_MANAGER = services.model_manager
@@ -645,6 +761,9 @@ if not SKIP_APP_INIT:
     HISTORY_SERVICE = services.history_service
     app = services.app
     API_OPEN = services.api_open
+    MORPH_DEFAULT_EXPRESSION_EXTRACTOR = getattr(MORPHOLOGY_REPOSITORY, "expression_extractor", None)
+    MORPH_DEFAULT_LM_VERIFY_ENABLED = bool(getattr(MORPHOLOGY_REPOSITORY, "lm_verify_enabled", False))
+    _apply_runtime_modes()
 else:
     logger.info("KOKORO_SKIP_APP_INIT enabled; skipping model and UI initialization")
 

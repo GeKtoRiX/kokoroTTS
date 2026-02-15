@@ -31,7 +31,12 @@ class HistoryService:
         return history
 
     def clear_history(self, history: list[str]) -> list[str]:
-        deleted = self.repository.delete_paths(list(history or []))
+        deleted_from_history = self.repository.delete_paths(list(history or []))
+        deleted_from_today = self.repository.delete_current_date_files()
         self.state.last_saved_paths = []
-        self.logger.info("Cleared history: deleted=%s", deleted)
+        self.logger.info(
+            "Cleared history: deleted_history=%s deleted_today=%s",
+            deleted_from_history,
+            deleted_from_today,
+        )
         return []

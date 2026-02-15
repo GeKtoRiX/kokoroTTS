@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime
 
 from kokoro_tts.application.history_service import HistoryService
 from kokoro_tts.storage.history_repository import HistoryRepository
@@ -39,6 +40,34 @@ def test_history_repository_deletes_only_files_inside_output_dir(tmp_path: Path)
     assert logger.exceptions == []
 
 
+def test_history_repository_deletes_only_records_in_current_date_folder(tmp_path: Path):
+    logger = _Logger()
+    output_dir = tmp_path / "outputs"
+    date_dir = output_dir / datetime.now().strftime("%Y-%m-%d")
+    records_dir = date_dir / "records"
+    vocab_dir = date_dir / "vocabulary"
+    records_dir.mkdir(parents=True)
+    vocab_dir.mkdir(parents=True)
+
+    today_audio = records_dir / "today.wav"
+    today_csv = vocab_dir / "today.csv"
+    today_audio.write_bytes(b"a")
+    today_csv.write_bytes(b"b")
+
+    old_dir = output_dir / "2000-01-01" / "records"
+    old_dir.mkdir(parents=True)
+    old_audio = old_dir / "old.wav"
+    old_audio.write_bytes(b"c")
+
+    repository = HistoryRepository(str(output_dir), logger)
+    deleted = repository.delete_current_date_files()
+
+    assert deleted == 1
+    assert today_audio.exists() is False
+    assert today_csv.exists() is True
+    assert old_audio.exists() is True
+
+
 def test_history_service_updates_and_truncates_history(tmp_path: Path):
     logger = _Logger()
     output_dir = tmp_path / "outputs"
@@ -69,6 +98,14 @@ def test_history_service_clear_history_resets_state(tmp_path: Path):
     output_dir.mkdir()
     audio = output_dir / "to_delete.wav"
     audio.write_bytes(b"abc")
+    date_dir = output_dir / datetime.now().strftime("%Y-%m-%d") / "records"
+    date_dir.mkdir(parents=True)
+    today_generated = date_dir / "today_generated.wav"
+    today_generated.write_bytes(b"xyz")
+    vocabulary_dir = output_dir / datetime.now().strftime("%Y-%m-%d") / "vocabulary"
+    vocabulary_dir.mkdir(parents=True)
+    vocab_file = vocabulary_dir / "today.csv"
+    vocab_file.write_bytes(b"vocab")
 
     class State:
         last_saved_paths = [str(audio)]
@@ -84,4 +121,6 @@ def test_history_service_clear_history_resets_state(tmp_path: Path):
 
     assert cleared == []
     assert service.state.last_saved_paths == []
+    assert today_generated.exists() is False
+    assert vocab_file.exists() is True
     assert logger.infos

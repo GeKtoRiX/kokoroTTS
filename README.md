@@ -95,6 +95,8 @@ Create/edit `.env` (or start from `.env.example`):
 - `NORMALIZE_TIMES`, `NORMALIZE_NUMBERS`
 - `DEFAULT_OUTPUT_FORMAT` (`wav|mp3|ogg`)
 - `DEFAULT_CONCURRENCY_LIMIT`
+- `TTS_ONLY_MODE` (`1` disables Morphology DB writes and all LLM requests)
+- `LLM_ONLY_MODE` (`1` enables `TTS + Morphology` mode: disables LLM requests, keeps Morphology DB writes enabled)
 - `LOG_LEVEL`, `FILE_LOG_LEVEL`, `LOG_DIR`
 - `LOG_EVERY_N_SEGMENTS`
 - `UI_PRIMARY_HUE`
@@ -125,10 +127,11 @@ If LM verify is disabled and local expressions are also disabled, `expressions` 
 
 Generated files are grouped by date inside `OUTPUT_DIR`:
 - `OUTPUT_DIR/YYYY-MM-DD/records` for audio files
-- `OUTPUT_DIR/YYYY-MM-DD/vocabulary` for morphology exports (`.ods`/`.csv`)
+- `OUTPUT_DIR/YYYY-MM-DD/vocabulary` for morphology exports (`.ods`/`.csv`/`.txt`/`.xlsx`)
 
-UI includes a `Morphology DB Export` accordion with `Download ODS` for `lexemes`, `token_occurrences`, `expressions`, `reviews`, or `POS table` (LibreOffice Calc native format).
-`POS table` export uses columns by parts of speech (Noun, Verb, Adjective, etc.) and rows with words.
+UI includes a `Morphology DB Export` accordion with selectable export format (`.ods`, `.csv`, `.txt`, `.xlsx`)
+for `lexemes`, `token_occurrences`, `expressions`, `reviews`, or `General table`.
+`General table` export uses columns by parts of speech (Noun, Verb, Adjective, etc.) and rows with words.
 
 UI also includes a `Morphology DB` tab with basic CRUD operations for `morphology.sqlite3`:
 - browse rows by dataset (`lexemes`, `occurrences`, `expressions`, `reviews`)
@@ -162,6 +165,21 @@ UI also includes a `Lesson Builder (LLM)` tab:
 - sends raw text to LM Studio over OpenAI-compatible Chat Completions API
 - rewrites it into an English lesson script with detailed exercise explanations
 - allows inserting generated lesson text back into the main TTS input
+
+UI includes a `Runtime mode` accordion with a single mode selector:
+- `Default`
+- `TTS + Morphology`
+- `Full`
+
+Mode behavior:
+- `Default` is plain TTS: morphology ingest/DB writes and all LLM requests are disabled.
+- `TTS + Morphology` disables LLM requests but keeps morphology ingest/DB writes enabled.
+- `Full` enables TTS + morphology + LLM.
+- In `TTS + Morphology`, local phrasal verbs/idioms extraction is forced on even when `MORPH_LOCAL_EXPRESSIONS_ENABLED=0`.
+- Tab visibility follows mode:
+- `Default`: hides `Lesson Builder` and `Morphology DB` tabs.
+- `TTS + Morphology`: hides `Lesson Builder`, shows `Morphology DB`.
+- `Full`: shows both `Lesson Builder` and `Morphology DB`.
 
 Expression detection uses:
 - spaCy `DependencyMatcher` for verb + particle phrasal verbs (lemma-based)

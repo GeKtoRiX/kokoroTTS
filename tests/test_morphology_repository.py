@@ -5,6 +5,8 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from kokoro_tts.storage.morphology_repository import MorphologyRepository
 
 
@@ -149,6 +151,8 @@ def test_morphology_repository_export_returns_none_for_empty_or_disabled(tmp_pat
         expression_extractor=lambda _: [],
     )
     assert repo.export_csv(dataset="lexemes", output_dir=str(tmp_path)) is None
+    assert repo.export_txt(dataset="lexemes", output_dir=str(tmp_path)) is None
+    assert repo.export_word_table(dataset="lexemes", output_dir=str(tmp_path)) is None
     assert repo.export_spreadsheet(dataset="lexemes", output_dir=str(tmp_path)) is None
 
 
@@ -250,6 +254,85 @@ def test_morphology_repository_exports_lexemes_ods(tmp_path: Path):
         names = set(archive.namelist())
     assert "content.xml" in names
     assert "styles.xml" in names
+
+
+def test_morphology_repository_exports_lexemes_txt(tmp_path: Path):
+    db_path = tmp_path / "export_txt.sqlite3"
+    export_dir = tmp_path / "exports"
+
+    repo = MorphologyRepository(
+        enabled=True,
+        db_path=str(db_path),
+        logger_instance=logging.getLogger("test"),
+        analyzer=lambda _: {
+            "language": "en",
+            "items": [
+                {
+                    "token": "Cats",
+                    "lemma": "cat",
+                    "upos": "NOUN",
+                    "feats": {"Number": "Plur"},
+                    "start": 0,
+                    "end": 4,
+                    "key": "cat|noun",
+                }
+            ],
+        },
+        expression_extractor=lambda _: [],
+    )
+    repo.ingest_dialogue_parts([[("af_heart", "Cats")]], source="generate_first")
+
+    txt_path = repo.export_txt(dataset="lexemes", output_dir=str(export_dir))
+    assert txt_path is not None
+    assert Path(txt_path).suffix == ".txt"
+    assert Path(txt_path).is_file()
+    content = Path(txt_path).read_text(encoding="utf-8")
+    assert "dedup_key" in content
+    assert "cat|noun" in content
+
+
+def test_morphology_repository_exports_lexemes_xlsx(tmp_path: Path):
+    openpyxl_module = pytest.importorskip("openpyxl")
+    _ = openpyxl_module
+
+    db_path = tmp_path / "export_xlsx.sqlite3"
+    export_dir = tmp_path / "exports"
+
+    repo = MorphologyRepository(
+        enabled=True,
+        db_path=str(db_path),
+        logger_instance=logging.getLogger("test"),
+        analyzer=lambda _: {
+            "language": "en",
+            "items": [
+                {
+                    "token": "Cats",
+                    "lemma": "cat",
+                    "upos": "NOUN",
+                    "feats": {"Number": "Plur"},
+                    "start": 0,
+                    "end": 4,
+                    "key": "cat|noun",
+                }
+            ],
+        },
+        expression_extractor=lambda _: [],
+    )
+    repo.ingest_dialogue_parts([[("af_heart", "Cats")]], source="generate_first")
+
+    xlsx_path = repo.export_excel(dataset="lexemes", output_dir=str(export_dir))
+    assert xlsx_path is not None
+    assert Path(xlsx_path).suffix == ".xlsx"
+    assert Path(xlsx_path).is_file()
+
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(filename=xlsx_path)
+    worksheet = workbook.active
+    header_cells = [str(cell.value or "") for cell in worksheet[1]]
+    value_cells = [str(cell.value or "") for cell in worksheet[2]]
+    assert "dedup_key" in header_cells
+    assert "cat|noun" in value_cells
 
 
 def test_morphology_repository_exports_pos_table_ods(tmp_path: Path):

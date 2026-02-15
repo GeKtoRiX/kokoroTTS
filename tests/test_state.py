@@ -310,3 +310,12 @@ def test_generate_first_falls_back_when_pipeline_has_no_style_argument():
     assert len(pipeline.calls[0]) == 3
     assert manager.cpu_model.calls
     assert round(float(manager.cpu_model.calls[0][2]), 2) == 1.12
+
+
+def test_set_aux_features_enabled_disables_morphology_persist():
+    morph = _MorphRepo()
+    state, _, _, _ = _build_state(morph_repo=morph)
+    state.set_aux_features_enabled(False)
+    result, _ = state.generate_first("hello world", save_outputs=False, use_gpu=False)
+    assert result is not None
+    assert morph.rows == []

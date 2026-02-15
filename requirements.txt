@@ -6,4 +6,5 @@ misaki[ja,zh]>=0.9.4
 spacy>=3.8,<4
 stanza>=1.9,<2
 odfpy>=1.4.1,<2
+openpyxl>=3.1,<4
 nltk>=3.9,<4

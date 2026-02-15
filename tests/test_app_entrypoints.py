@@ -11,6 +11,7 @@ from kokoro_tts import main as app_main
 class _State:
     def __init__(self):
         self.calls = []
+        self.aux_features = []
         self.model_manager = SimpleNamespace(
             get_model=lambda _use_gpu: (lambda ps, ref_s, speed: (ps, ref_s, speed))
         )
@@ -26,6 +27,9 @@ class _State:
     def generate_all(self, **kwargs):
         self.calls.append(("generate_all", kwargs))
         yield (24000, [1.0])
+
+    def set_aux_features_enabled(self, enabled):
+        self.aux_features.append(bool(enabled))
 
 
 def test_app_wrappers_delegate_to_state(monkeypatch):
@@ -66,14 +70,50 @@ def test_export_morphology_sheet_branches(monkeypatch, tmp_path):
     assert "not configured" in status
 
     class Repo:
+        def export_csv(self, dataset, output_dir):
+            _ = (dataset, output_dir)
+            return str(tmp_path / "sheet.csv")
+
+        def export_txt(self, dataset, output_dir):
+            _ = (dataset, output_dir)
+            return str(tmp_path / "sheet.txt")
+
+        def export_excel(self, dataset, output_dir):
+            _ = (dataset, output_dir)
+            return str(tmp_path / "sheet.xlsx")
+
         def export_spreadsheet(self, dataset, output_dir):
             _ = (dataset, output_dir)
             return str(tmp_path / "sheet.ods")
 
     monkeypatch.setattr(app, "MORPHOLOGY_REPOSITORY", Repo())
-    file_path, status = app.export_morphology_sheet("lexemes")
+    file_path, status = app.export_morphology_sheet("lexemes", "ods")
     assert file_path and file_path.endswith(".ods")
     assert "Export ready" in status
+
+    file_path, status = app.export_morphology_sheet("lexemes", "csv")
+    assert file_path and file_path.endswith(".csv")
+    assert "Export ready" in status
+
+    file_path, status = app.export_morphology_sheet("lexemes", "txt")
+    assert file_path and file_path.endswith(".txt")
+    assert "Export ready" in status
+
+    file_path, status = app.export_morphology_sheet("lexemes", "xlsx")
+    assert file_path and file_path.endswith(".xlsx")
+    assert "Export ready" in status
+
+    file_path, status = app.export_morphology_sheet("lexemes", "word")
+    assert file_path and file_path.endswith(".xlsx")
+    assert "Export ready" in status
+
+    file_path, status = app.export_morphology_sheet("lexemes", "docx")
+    assert file_path and file_path.endswith(".xlsx")
+    assert "Export ready" in status
+
+    file_path, status = app.export_morphology_sheet("lexemes", "unknown")
+    assert file_path is None
+    assert "Unsupported export format" in status
 
     class FailingRepo:
         def export_spreadsheet(self, dataset, output_dir):
@@ -81,7 +121,7 @@ def test_export_morphology_sheet_branches(monkeypatch, tmp_path):
             raise RuntimeError("boom")
 
     monkeypatch.setattr(app, "MORPHOLOGY_REPOSITORY", FailingRepo())
-    file_path, status = app.export_morphology_sheet("lexemes")
+    file_path, status = app.export_morphology_sheet("lexemes", "ods")
     assert file_path is None
     assert "Export failed" in status
 
@@ -220,3 +260,56 @@ def test_pronunciation_dictionary_handlers(monkeypatch, tmp_path):
     assert export_path is not None
     assert Path(export_path).is_file()
     assert "Export ready" in status
+
+
+def test_tts_only_mode_blocks_db_and_llm_features(monkeypatch):
+    state = _State()
+    monkeypatch.setattr(app, "APP_STATE", state)
+    monkeypatch.setattr(app, "TTS_ONLY_MODE", False)
+    monkeypatch.setattr(app, "LLM_ONLY_MODE", False)
+
+    status = app.set_tts_only_mode(True)
+    assert "enabled" in status.lower()
+    assert state.aux_features and state.aux_features[-1] is False
+
+    _, db_status = app.morphology_db_view()
+    assert "tts-only mode" in db_status.lower()
+
+    lesson_text, lesson_status = app.build_lesson_for_tts("hello world")
+    assert lesson_text == ""
+    assert "disabled" in lesson_status.lower()
+
+
+def test_llm_only_mode_disables_llm_and_keeps_morphology_enabled(monkeypatch):
+    state = _State()
+
+    class Repo:
+        def __init__(self):
+            self.lm_verify_enabled = True
+            self.lm_verifier = lambda payload: payload
+            self.expression_extractor = lambda _text: []
+
+    repo = Repo()
+    default_extractor = repo.expression_extractor
+
+    monkeypatch.setattr(app, "APP_STATE", state)
+    monkeypatch.setattr(app, "MORPHOLOGY_REPOSITORY", repo)
+    monkeypatch.setattr(app, "MORPH_DEFAULT_EXPRESSION_EXTRACTOR", default_extractor)
+    monkeypatch.setattr(app, "MORPH_DEFAULT_LM_VERIFY_ENABLED", True)
+    monkeypatch.setattr(app, "TTS_ONLY_MODE", False)
+    monkeypatch.setattr(app, "LLM_ONLY_MODE", False)
+
+    status = app.set_llm_only_mode(True)
+    assert "enabled" in status.lower()
+    assert state.aux_features and state.aux_features[-1] is True
+    assert repo.lm_verify_enabled is False
+    assert repo.expression_extractor is app.extract_english_expressions
+
+    lesson_text, lesson_status = app.build_lesson_for_tts("hello world")
+    assert lesson_text == ""
+    assert "disabled" in lesson_status.lower()
+
+    status = app.set_llm_only_mode(False)
+    assert "disabled" in status.lower() or "enabled" in status.lower()
+    assert repo.lm_verify_enabled is True
+    assert repo.expression_extractor is default_extractor
