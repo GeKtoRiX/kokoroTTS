@@ -46,18 +46,7 @@ def test_configure_ffmpeg_logs_when_missing(monkeypatch, tmp_path):
     assert "FFMPEG_BINARY" in joined
 
 
-def test_build_forward_gpu_wraps_model_call(monkeypatch):
-    called = {}
-
-    def fake_gpu(duration):
-        def decorator(fn):
-            called["duration"] = duration
-            return fn
-
-        return decorator
-
-    monkeypatch.setattr("kokoro_tts.integrations.spaces_gpu.spaces.GPU", fake_gpu)
-
+def test_build_forward_gpu_wraps_model_call():
     class Manager:
         def get_model(self, use_gpu):
             assert use_gpu is True
@@ -67,4 +56,3 @@ def test_build_forward_gpu_wraps_model_call(monkeypatch):
     output = forward(torch.tensor([1.0]), torch.tensor([2.0]), 3.0)
 
     assert torch.equal(output, torch.tensor([6.0]))
-    assert called["duration"] == 30

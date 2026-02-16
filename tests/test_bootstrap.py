@@ -1,4 +1,11 @@
+import sys
 from types import SimpleNamespace
+
+if "torch" not in sys.modules:
+    sys.modules["torch"] = SimpleNamespace(
+        __version__="0.0-test",
+        cuda=SimpleNamespace(is_available=lambda: False),
+    )
 
 from kokoro_tts.application import bootstrap
 
@@ -132,9 +139,9 @@ def test_initialize_app_services_builds_bundle(monkeypatch):
         def __init__(self, history_limit, repository, state, logger):
             calls["history_service_init"] = (history_limit, repository, state, logger)
 
-    def fake_create_gradio_app(**kwargs):
-        calls["create_gradio_app"] = kwargs
-        return "APP", True
+    def fake_create_tkinter_app(**kwargs):
+        calls["create_tkinter_app"] = kwargs
+        return "APP"
 
     monkeypatch.setattr(bootstrap, "PronunciationRepository", FakePronRepo)
     monkeypatch.setattr(bootstrap, "ModelManager", FakeModelManager)
@@ -144,7 +151,7 @@ def test_initialize_app_services_builds_bundle(monkeypatch):
     monkeypatch.setattr(bootstrap, "KokoroState", FakeState)
     monkeypatch.setattr(bootstrap, "HistoryRepository", FakeHistoryRepo)
     monkeypatch.setattr(bootstrap, "HistoryService", FakeHistoryService)
-    monkeypatch.setattr(bootstrap, "create_gradio_app", fake_create_gradio_app)
+    monkeypatch.setattr(bootstrap, "create_tkinter_app", fake_create_tkinter_app)
     monkeypatch.setattr(bootstrap, "build_forward_gpu", lambda _model_manager: "forward_gpu")
 
     logger = _Logger()
@@ -176,7 +183,6 @@ def test_initialize_app_services_builds_bundle(monkeypatch):
     )
 
     assert bundle.app == "APP"
-    assert bundle.api_open is True
     assert calls["model_manager_init"][0] == "hexgrad/Kokoro-82M"
     assert calls["audio_writer_init"][0] == "outputs"
-    assert "create_gradio_app" in calls
+    assert "create_tkinter_app" in calls

@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Mapping, cast
-
-import gradio as gr
+from typing import Callable, Mapping
 
 from ..config import AppConfig
 from ..constants import SAMPLE_RATE
@@ -17,7 +15,8 @@ from ..storage.audio_writer import AudioWriter
 from ..storage.history_repository import HistoryRepository
 from ..storage.morphology_repository import MorphologyRepository
 from ..storage.pronunciation_repository import PronunciationRepository
-from ..ui.gradio_app import create_gradio_app
+from ..ui.desktop_types import DesktopApp
+from ..ui.tkinter_app import create_tkinter_app
 from .history_service import HistoryService
 from .state import KokoroState
 from .ui_hooks import UiHooks
@@ -35,8 +34,7 @@ class AppServices:
     app_state: KokoroState
     history_repository: HistoryRepository
     history_service: HistoryService
-    app: gr.Blocks
-    api_open: bool
+    app: DesktopApp
 
 
 def build_lm_verifier(config: AppConfig, logger) -> LmVerifier | None:
@@ -149,10 +147,10 @@ def initialize_app_services(
 
     forward_gpu = build_forward_gpu(model_manager)
     ui_hooks = UiHooks(
-        warn=gr.Warning,
-        info=gr.Info,
-        error=cast(Callable[[Exception], Exception], gr.Error),
-        error_type=gr.exceptions.Error,
+        warn=lambda message: logger.warning("UI warning: %s", message),
+        info=lambda message: logger.info("UI info: %s", message),
+        error=lambda error: error,
+        error_type=Exception,
     )
     app_state = KokoroState(
         model_manager,
@@ -174,7 +172,7 @@ def initialize_app_services(
         logger,
     )
 
-    app, api_open = create_gradio_app(
+    app = create_tkinter_app(
         config=config,
         cuda_available=cuda_available,
         logger=logger,
@@ -210,5 +208,4 @@ def initialize_app_services(
         history_repository=history_repository,
         history_service=history_service,
         app=app,
-        api_open=api_open,
     )

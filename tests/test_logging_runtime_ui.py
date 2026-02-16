@@ -1,9 +1,18 @@
+import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+if "torch" not in sys.modules:
+    sys.modules["torch"] = SimpleNamespace(
+        __version__="0.0-test",
+        cuda=SimpleNamespace(is_available=lambda: False),
+    )
 
 from kokoro_tts.config import AppConfig
 from kokoro_tts.logging_config import setup_logging
 from kokoro_tts.runtime import CUDA_AVAILABLE
-from kokoro_tts.ui.gradio_app import APP_TITLE, create_gradio_app
+from kokoro_tts.ui.common import APP_TITLE
+from kokoro_tts.ui.tkinter_app import create_tkinter_app
 
 
 class _Logger:
@@ -66,7 +75,7 @@ def test_runtime_flag_is_boolean():
     assert isinstance(CUDA_AVAILABLE, bool)
 
 
-def test_create_gradio_app_in_both_api_modes(tmp_path):
+def test_create_tkinter_app_builds_root(tmp_path):
     logger = _Logger()
     service = _HistoryService()
 
@@ -82,9 +91,9 @@ def test_create_gradio_app_in_both_api_modes(tmp_path):
     def _predict(*_args, **_kwargs):
         return 24000, []
 
-    config_open = _build_config(tmp_path, history_limit=2, morph_enabled=True, space_id="")
-    app_open, api_open = create_gradio_app(
-        config=config_open,
+    config_value = _build_config(tmp_path, history_limit=2, morph_enabled=True, space_id="")
+    app_instance = create_tkinter_app(
+        config=config_value,
         cuda_available=False,
         logger=logger,
         generate_first=_generate_first,
@@ -95,34 +104,20 @@ def test_create_gradio_app_in_both_api_modes(tmp_path):
         history_service=service,
         choices={},
     )
-    assert app_open is not None
-    assert app_open.title == APP_TITLE
-    assert api_open is True
-    app_open_components = app_open.get_config_file().get("components", [])
-    assert any(
-        component.get("type") == "markdown"
-        and component.get("props", {}).get("value") == f"# {APP_TITLE}"
-        for component in app_open_components
-    )
+    assert app_instance is not None
+    assert app_instance.title == APP_TITLE
+    root = app_instance.build_for_test()
+    tab_texts = [app_instance.notebook.tab(tab_id, "text") for tab_id in app_instance.notebook.tabs()]
+    assert "Generate" in tab_texts
+    assert "Stream" in tab_texts
+    assert "Lesson Builder (LLM)" not in tab_texts
+    assert "Morphology DB" not in tab_texts
 
-    config_closed = _build_config(
-        tmp_path,
-        history_limit=0,
-        morph_enabled=False,
-        space_id="hexgrad/Kokoro-TTS",
-    )
-    app_closed, api_open_closed = create_gradio_app(
-        config=config_closed,
-        cuda_available=True,
-        logger=logger,
-        generate_first=_generate_first,
-        tokenize_first=_tokenize_first,
-        generate_all=_generate_all,
-        predict=_predict,
-        export_morphology_sheet=None,
-        history_service=service,
-        choices={},
-    )
-    assert app_closed is not None
-    assert app_closed.title == APP_TITLE
-    assert api_open_closed is False
+    app_instance._set_runtime_mode("full", apply_backend=False)
+    tab_texts = [app_instance.notebook.tab(tab_id, "text") for tab_id in app_instance.notebook.tabs()]
+    assert "Lesson Builder (LLM)" in tab_texts
+    assert "Morphology DB" in tab_texts
+
+    root.withdraw()
+    root.update_idletasks()
+    root.destroy()

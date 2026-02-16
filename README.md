@@ -1,6 +1,6 @@
 # Kokoro TTS (Windows, project-local `.venv`)
 
-Local Gradio app for `hexgrad/Kokoro-82M` with:
+Local Tkinter desktop app for `hexgrad/Kokoro-82M` with:
 - generate + stream modes
 - voice mix and inline dialogue tags
 - persistent pronunciation dictionary (JSON rules by language)
@@ -23,6 +23,7 @@ This project is configured for **project-local runtime only**:
 - Python packages are installed only into `.venv`
 - ffmpeg and espeak-ng are kept in `tools/`
 - no global `pip install` is required
+- desktop Audio player uses `python-vlc` and requires VLC runtime installed on the machine
 
 ## Quick start
 
@@ -111,7 +112,6 @@ Create/edit `.env` (or start from `.env.example`):
 - `LLM_ONLY_MODE` (`1` enables `TTS + Morphology` mode: disables LLM requests, keeps Morphology DB writes enabled)
 - `LOG_LEVEL`, `FILE_LOG_LEVEL`, `LOG_DIR`
 - `LOG_EVERY_N_SEGMENTS`
-- `UI_PRIMARY_HUE`
 - `MORPH_DB_ENABLED`, `MORPH_DB_PATH`, `MORPH_DB_TABLE_PREFIX`
 - `MORPH_LOCAL_EXPRESSIONS_ENABLED` (`0` by default; set `1` to re-enable local phrasal/idiom extractor)
 - `PRONUNCIATION_RULES_PATH` (default `data/pronunciation_rules.json`)

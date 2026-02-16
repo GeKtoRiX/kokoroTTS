@@ -1,11 +1,10 @@
-import gradio as gr
 import pytest
 
-from kokoro_tts.ui.gradio_app import (
-    _build_morph_update_payload,
-    _extract_morph_headers,
-    _normalize_morph_dataset,
-    _resolve_morph_delete_confirmation,
+from kokoro_tts.ui.common import (
+    build_morph_update_payload,
+    extract_morph_headers,
+    normalize_morph_dataset,
+    resolve_morph_delete_confirmation,
 )
 
 
@@ -45,7 +44,7 @@ def test_build_update_payload_for_occurrences_excludes_id_and_created_at():
         "2026-02-15 00:00:00",
     ]
 
-    selected_row_id, payload = _build_morph_update_payload("occurrence", headers, row)
+    selected_row_id, payload = build_morph_update_payload("occurrence", headers, row)
 
     assert selected_row_id == "15"
     assert "id" not in payload
@@ -63,7 +62,7 @@ def test_build_update_payload_for_lexemes_uses_dedup_key_and_skips_it_in_payload
     headers = ["dedup_key", "lemma", "upos", "feats_json", "created_at"]
     row = ["run|verb", "run", "VERB", "{}", "2026-02-15 00:00:00"]
 
-    selected_row_id, payload = _build_morph_update_payload("lexeme", headers, row)
+    selected_row_id, payload = build_morph_update_payload("lexeme", headers, row)
 
     assert selected_row_id == "run|verb"
     assert "dedup_key" not in payload
@@ -104,7 +103,7 @@ def test_build_update_payload_for_expressions_coerces_wordnet_hit_safely():
         "2026-02-15 00:00:00",
     ]
 
-    selected_row_id, payload = _build_morph_update_payload("expressions", headers, row)
+    selected_row_id, payload = build_morph_update_payload("expressions", headers, row)
 
     assert selected_row_id == "7"
     assert payload["wordnet_hit"] == 0
@@ -116,38 +115,38 @@ def test_build_update_payload_for_expressions_coerces_wordnet_hit_safely():
 def test_build_update_payload_rejects_invalid_selection_data():
     headers = ["id", "token_text", "created_at"]
     with pytest.raises(ValueError, match="No row selected"):
-        _build_morph_update_payload("occurrences", headers, None)
+        build_morph_update_payload("occurrences", headers, None)
 
     with pytest.raises(ValueError, match="Primary key column 'dedup_key' is missing"):
-        _build_morph_update_payload("lexemes", headers, ["1", "Cats", "2026-02-15 00:00:00"])
+        build_morph_update_payload("lexemes", headers, ["1", "Cats", "2026-02-15 00:00:00"])
 
 
 def test_delete_confirmation_state_requires_second_click_and_resets_on_selection_change():
-    should_delete, armed, message = _resolve_morph_delete_confirmation("15", "")
+    should_delete, armed, message = resolve_morph_delete_confirmation("15", "")
     assert should_delete is False
     assert armed == "15"
     assert "again to confirm" in message
 
-    should_delete, armed, message = _resolve_morph_delete_confirmation("15", "15")
+    should_delete, armed, message = resolve_morph_delete_confirmation("15", "15")
     assert should_delete is True
     assert armed == ""
     assert message == ""
 
-    should_delete, armed, message = _resolve_morph_delete_confirmation("16", "15")
+    should_delete, armed, message = resolve_morph_delete_confirmation("16", "15")
     assert should_delete is False
     assert armed == "16"
     assert "again to confirm" in message
 
 
-def test_extract_headers_from_gradio_update_and_missing_headers_fallback():
-    update = gr.update(value=[], headers=["id", "token_text"])
-    assert _extract_morph_headers(update) == ["id", "token_text"]
-    assert _extract_morph_headers({"value": []}) == []
+def test_extract_headers_from_table_update_and_missing_headers_fallback():
+    update = {"value": [], "headers": ["id", "token_text"]}
+    assert extract_morph_headers(update) == ["id", "token_text"]
+    assert extract_morph_headers({"value": []}) == []
 
 
 def test_normalize_dataset_aliases():
-    assert _normalize_morph_dataset("occurrence") == "occurrences"
-    assert _normalize_morph_dataset("lexeme") == "lexemes"
-    assert _normalize_morph_dataset("mwes") == "expressions"
-    assert _normalize_morph_dataset("review") == "reviews"
-    assert _normalize_morph_dataset("unknown") == "occurrences"
+    assert normalize_morph_dataset("occurrence") == "occurrences"
+    assert normalize_morph_dataset("lexeme") == "lexemes"
+    assert normalize_morph_dataset("mwes") == "expressions"
+    assert normalize_morph_dataset("review") == "reviews"
+    assert normalize_morph_dataset("unknown") == "occurrences"

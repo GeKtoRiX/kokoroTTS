@@ -52,7 +52,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("OUTPUT_DIR", str(Path("outputs") / "smoke"))
 os.environ.setdefault("KOKORO_REPO_ID", "hexgrad/Kokoro-82M")
 

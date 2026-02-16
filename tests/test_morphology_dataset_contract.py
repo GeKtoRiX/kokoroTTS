@@ -7,7 +7,7 @@ from kokoro_tts.domain.morphology_datasets import (
     morphology_primary_key,
     normalize_morphology_dataset,
 )
-from kokoro_tts.ui import gradio_app
+from kokoro_tts.ui.common import normalize_morph_dataset
 
 
 def test_dataset_aliases_are_canonical_across_layers():
@@ -32,7 +32,7 @@ def test_dataset_aliases_are_canonical_across_layers():
     for raw_value, canonical in expected.items():
         assert normalize_morphology_dataset(raw_value) == canonical
         assert app._normalize_morph_dataset(raw_value) == canonical
-        assert gradio_app._normalize_morph_dataset(raw_value) == canonical
+        assert normalize_morph_dataset(raw_value) == canonical
 
 
 def test_primary_key_contract_by_dataset():

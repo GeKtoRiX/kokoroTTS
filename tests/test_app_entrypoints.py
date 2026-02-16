@@ -1,8 +1,15 @@
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("KOKORO_SKIP_APP_INIT", "1")
+
+if "torch" not in sys.modules:
+    sys.modules["torch"] = SimpleNamespace(
+        __version__="0.0-test",
+        cuda=SimpleNamespace(is_available=lambda: False),
+    )
 
 import app
 from kokoro_tts import main as app_main
@@ -148,45 +155,17 @@ def test_launch_handles_skip_mode(monkeypatch):
     assert app.launch() is None
 
 
-def test_launch_builds_queue_kwargs_for_gradio_versions(monkeypatch):
+def test_launch_delegates_to_desktop_app(monkeypatch):
     launched = {}
 
-    class QueuedShowApi:
-        def launch(self, show_api=None, ssr_mode=None):
-            launched["show_api"] = show_api
-            launched["ssr_mode"] = ssr_mode
-
-    class AppA:
-        def queue(self, **kwargs):
-            launched["queue_a"] = kwargs
-            return QueuedShowApi()
+    class DesktopApp:
+        def launch(self):
+            launched["ok"] = True
 
     monkeypatch.setattr(app, "SKIP_APP_INIT", False)
-    monkeypatch.setattr(app, "app", AppA())
-    monkeypatch.setattr(app, "API_OPEN", True)
-    monkeypatch.setattr(app, "SSR_MODE", True)
-    monkeypatch.setattr(app, "CONFIG", SimpleNamespace(default_concurrency_limit=3))
+    monkeypatch.setattr(app, "app", DesktopApp())
     app.launch()
-    assert launched["queue_a"]["api_open"] is True
-    assert launched["queue_a"]["default_concurrency_limit"] == 3
-    assert launched["show_api"] is True
-    assert launched["ssr_mode"] is True
-
-    class QueuedFooter:
-        def launch(self, footer_links=None):
-            launched["footer_links"] = footer_links
-
-    class AppB:
-        def queue(self, **kwargs):
-            launched["queue_b"] = kwargs
-            return QueuedFooter()
-
-    monkeypatch.setattr(app, "app", AppB())
-    monkeypatch.setattr(app, "API_OPEN", False)
-    monkeypatch.setattr(app, "CONFIG", SimpleNamespace(default_concurrency_limit=None))
-    app.launch()
-    assert launched["queue_b"] == {"api_open": False}
-    assert launched["footer_links"] == ["gradio", "settings"]
+    assert launched["ok"] is True
 
 
 def test_forward_gpu_and_main_delegate(monkeypatch):

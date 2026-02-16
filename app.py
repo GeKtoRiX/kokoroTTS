@@ -1,15 +1,12 @@
-"""Gradio entrypoint and compatibility facade for Kokoro TTS."""
+"""Desktop entrypoint and compatibility facade for Kokoro TTS."""
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import platform
 import sys
 from datetime import datetime
 
-import gradio as gr
-import spaces
 import torch
 
 from kokoro_tts.config import AppConfig, load_config
@@ -86,14 +83,6 @@ from kokoro_tts.application.bootstrap import initialize_app_services
 from kokoro_tts.application.history_service import HistoryService
 from kokoro_tts.application.state import KokoroState
 from kokoro_tts.application.ui_hooks import UiHooks
-from kokoro_tts.ui.gradio_app import (
-    APP_CSS,
-    APP_THEME,
-    DIALOGUE_NOTE,
-    TOKEN_NOTE,
-    UI_PRIMARY_HUE,
-    create_gradio_app,
-)
 
 CONFIG = load_config()
 logger = setup_logging(CONFIG)
@@ -197,8 +186,6 @@ MORPHOLOGY_REPOSITORY = None
 PRONUNCIATION_REPOSITORY = None
 APP_STATE = None
 app = None
-API_OPEN = None
-SSR_MODE = os.getenv("KOKORO_SSR_MODE", "").strip().lower() in ("1", "true", "yes")
 TTS_ONLY_MODE = _env_flag("TTS_ONLY_MODE")
 LLM_ONLY_MODE = _env_flag("LLM_ONLY_MODE")
 MORPH_DEFAULT_EXPRESSION_EXTRACTOR = None
@@ -386,7 +373,6 @@ def export_pronunciation_rules_json():
     return output_path, f"Export ready: {filename}"
 
 
-@spaces.GPU(duration=30)
 def forward_gpu(ps, ref_s, speed):
     return APP_STATE.model_manager.get_model(True)(ps, ref_s, speed)
 
@@ -536,7 +522,7 @@ def export_morphology_sheet(dataset: str = "lexemes", file_format: str = "ods"):
 
 
 def _empty_morphology_table_update():
-    return gr.update(value=[[]], headers=["No data"])
+    return {"value": [[]], "headers": ["No data"]}
 
 
 def _parse_row_payload(raw_json):
@@ -573,8 +559,8 @@ def morphology_db_view(dataset="occurrences", limit=100, offset=0):
     if not headers:
         return _empty_morphology_table_update(), "No table metadata available."
     if not rows:
-        return gr.update(value=[], headers=headers), "No rows found."
-    return gr.update(value=rows, headers=headers), f"Loaded {len(rows)} row(s)."
+        return {"value": [], "headers": headers}, "No rows found."
+    return {"value": rows, "headers": headers}, f"Loaded {len(rows)} row(s)."
 
 
 def morphology_db_add(dataset, row_json, limit=100, offset=0):
@@ -761,7 +747,6 @@ if not SKIP_APP_INIT:
     HISTORY_REPOSITORY = services.history_repository
     HISTORY_SERVICE = services.history_service
     app = services.app
-    API_OPEN = services.api_open
     MORPH_DEFAULT_EXPRESSION_EXTRACTOR = getattr(MORPHOLOGY_REPOSITORY, "expression_extractor", None)
     MORPH_DEFAULT_LM_VERIFY_ENABLED = bool(getattr(MORPHOLOGY_REPOSITORY, "lm_verify_enabled", False))
     _apply_runtime_modes()
@@ -773,31 +758,8 @@ def launch() -> None:
     if SKIP_APP_INIT:
         logger.info("KOKORO_SKIP_APP_INIT enabled; launch skipped")
         return
-    logger.info("Launching Gradio app")
-    queue_kwargs = {"api_open": API_OPEN}
-    if CONFIG.default_concurrency_limit is not None:
-        queue_kwargs["default_concurrency_limit"] = CONFIG.default_concurrency_limit
-    queued = app.queue(**queue_kwargs)
-    launch_params = inspect.signature(queued.launch).parameters
-    launch_kwargs = {}
-
-    # Gradio API visibility changed across major versions.
-    if "show_api" in launch_params:
-        launch_kwargs["show_api"] = API_OPEN
-    elif "footer_links" in launch_params:
-        launch_kwargs["footer_links"] = (
-            ["api", "gradio", "settings"] if API_OPEN else ["gradio", "settings"]
-        )
-
-    if "ssr_mode" in launch_params:
-        launch_kwargs["ssr_mode"] = SSR_MODE
-
-    if "theme" in launch_params:
-        launch_kwargs["theme"] = APP_THEME
-    if "css" in launch_params:
-        launch_kwargs["css"] = APP_CSS
-
-    queued.launch(**launch_kwargs)
+    logger.info("Launching desktop app")
+    app.launch()
 
 
 if __name__ == "__main__":
