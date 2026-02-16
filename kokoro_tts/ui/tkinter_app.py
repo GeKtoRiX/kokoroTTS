@@ -1700,21 +1700,21 @@ class TkinterDesktopApp(DesktopApp):
         controls_main.grid_columnconfigure(4, weight=1)
         self.audio_player_play_btn = ttk.Button(
             controls_main,
-            text="Play",
+            text="▶",
             style="TransportPrimary.TButton",
             command=self._on_audio_player_play,
         )
         self.audio_player_play_btn.grid(row=0, column=1, padx=8, pady=6)
         self.audio_player_pause_btn = ttk.Button(
             controls_main,
-            text="Pause",
+            text="▌▌",
             style="Transport.TButton",
             command=self._on_audio_player_pause,
         )
         self.audio_player_pause_btn.grid(row=0, column=2, padx=8, pady=6)
         self.audio_player_stop_btn = ttk.Button(
             controls_main,
-            text="Stop",
+            text="■",
             style="Transport.TButton",
             command=self._on_audio_player_stop,
         )
