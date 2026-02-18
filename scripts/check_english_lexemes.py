@@ -11,27 +11,19 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from kokoro_tts.domain.lexeme_checks import (
     analyze_and_validate_english_lexemes,
-    load_lm_verify_settings_from_env,
-    verify_english_lexemes_with_lm,
 )
-from kokoro_tts.integrations.lm_studio import LmStudioError
 
 DEFAULT_TEXT = "Look up the words, then run the tests again."
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Smoke-check English text splitting into lexemes with optional LM verification.",
+        description="Smoke-check English text splitting into lexemes.",
     )
     parser.add_argument(
         "--text",
         default=DEFAULT_TEXT,
         help="English text to analyze.",
-    )
-    parser.add_argument(
-        "--verify-llm",
-        action="store_true",
-        help="Run additional LM Studio verification (requires LM_VERIFY_* env vars).",
     )
     parser.add_argument(
         "--json",
@@ -57,20 +49,10 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(f"LEXEME_CHECK_OK tokens={token_count}")
 
-        if args.verify_llm:
-            settings = load_lm_verify_settings_from_env()
-            verify_summary = verify_english_lexemes_with_lm(
-                args.text,
-                analysis,
-                settings=settings,
-            )
-            summary["llm"] = verify_summary
-            print(f"LLM_VERIFY_OK mismatches={verify_summary['mismatch_count']}")
-
         if args.json:
             print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0
-    except (ValueError, LmStudioError, RuntimeError) as exc:
+    except (ValueError, RuntimeError) as exc:
         print(f"LEXEME_CHECK_FAILED: {exc}", file=sys.stderr)
         return 1
 

@@ -25,23 +25,10 @@ def _minimal_config(**overrides):
         "morph_db_path": "data/morphology.sqlite3",
         "morph_db_table_prefix": "morph_",
         "morph_local_expressions_enabled": True,
-        "lm_verify_enabled": False,
-        "lm_verify_model": "",
-        "lm_verify_base_url": "http://127.0.0.1:1234/v1",
-        "lm_verify_api_key": "lm-studio",
-        "lm_verify_timeout_seconds": 30,
-        "lm_verify_temperature": 0.0,
-        "lm_verify_max_tokens": 2048,
-        "lm_verify_max_retries": 2,
-        "lm_verify_workers": 1,
+        "morph_async_ingest": True,
+        "morph_async_max_pending": 8,
         "default_output_format": "wav",
         "space_id": "",
-        "lm_studio_base_url": "http://127.0.0.1:1234/v1",
-        "lm_studio_api_key": "lm-studio",
-        "lm_studio_model": "",
-        "lm_studio_timeout_seconds": 120,
-        "lm_studio_temperature": 0.3,
-        "lm_studio_max_tokens": 2048,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -57,41 +44,6 @@ class _Logger:
 
     def info(self, message, *args):
         self.info_messages.append(message % args if args else message)
-
-
-def test_build_lm_verifier_returns_none_when_model_missing():
-    logger = _Logger()
-    config = _minimal_config(lm_verify_enabled=True, lm_verify_model="")
-    verifier = bootstrap.build_lm_verifier(config, logger)
-    assert verifier is None
-    assert any("LM_VERIFY_MODEL is empty" in item for item in logger.warning_messages)
-
-
-def test_build_lm_verifier_wraps_payload(monkeypatch):
-    captured = {}
-
-    def fake_verify(request):
-        captured["request"] = request
-        return {"token_checks": []}
-
-    monkeypatch.setattr(bootstrap, "verify_pos_with_context", fake_verify)
-    logger = _Logger()
-    config = _minimal_config(lm_verify_enabled=True, lm_verify_model="test-model")
-    verifier = bootstrap.build_lm_verifier(config, logger)
-    assert callable(verifier)
-    response = verifier(
-        {
-            "segment_text": "Hello world",
-            "tokens": [{"token": "Hello"}],
-            "locked_expressions": [{"text": "hello world"}],
-        }
-    )
-    assert response == {"token_checks": []}
-    request = captured["request"]
-    assert request.segment_text == "Hello world"
-    assert request.tokens == [{"token": "Hello"}]
-    assert request.locked_expressions == [{"text": "hello world"}]
-    assert request.model == "test-model"
 
 
 def test_initialize_app_services_builds_bundle(monkeypatch):
@@ -163,14 +115,10 @@ def test_initialize_app_services_builds_bundle(monkeypatch):
         "predict": lambda *args, **kwargs: None,
         "export_morphology_sheet": lambda *args, **kwargs: None,
         "morphology_db_view": lambda *args, **kwargs: None,
-        "morphology_db_add": lambda *args, **kwargs: None,
-        "morphology_db_update": lambda *args, **kwargs: None,
-        "morphology_db_delete": lambda *args, **kwargs: None,
         "load_pronunciation_rules": lambda *args, **kwargs: None,
         "apply_pronunciation_rules": lambda *args, **kwargs: None,
         "import_pronunciation_rules": lambda *args, **kwargs: None,
         "export_pronunciation_rules": lambda *args, **kwargs: None,
-        "build_lesson_for_tts": lambda *args, **kwargs: None,
     }
 
     bundle = bootstrap.initialize_app_services(

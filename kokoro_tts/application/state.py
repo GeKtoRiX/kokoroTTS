@@ -1,8 +1,10 @@
 """Application state and orchestration for audio generation."""
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import inspect
 import logging
+import threading
 from typing import Callable, Generator
 
 import torch
@@ -36,6 +38,8 @@ class KokoroState:
         gpu_forward: Callable[[torch.Tensor, torch.Tensor, float], torch.Tensor] | None = None,
         ui_hooks: UiHooks | None = None,
         morphology_repository=None,
+        morphology_async_ingest: bool = False,
+        morphology_async_max_pending: int = 8,
     ) -> None:
         self.model_manager = model_manager
         self.normalizer = normalizer
@@ -47,12 +51,47 @@ class KokoroState:
         self.gpu_forward = gpu_forward
         self.ui_hooks = ui_hooks
         self.morphology_repository = morphology_repository
+        self.morphology_async_ingest = bool(morphology_async_ingest)
+        self.morphology_async_max_pending = max(1, int(morphology_async_max_pending))
         self.last_saved_paths: list[str] = []
         self.aux_features_enabled = True
         self._pipeline_style_param_cache: dict[type, str | None] = {}
+        self._pause_tensor_cache: dict[int, torch.Tensor] = {}
+        self._morph_executor: ThreadPoolExecutor | None = None
+        self._pending_morph_futures: list[Future[None]] = []
+        self._pending_morph_lock = threading.Lock()
+        if self.morphology_repository is not None and self.morphology_async_ingest:
+            self._morph_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="morphology-ingest",
+            )
 
     def set_aux_features_enabled(self, enabled: bool) -> None:
         self.aux_features_enabled = bool(enabled)
+
+    def _on_morph_ingest_done(self, future: Future[None]) -> None:
+        try:
+            future.result()
+        except Exception:
+            self.logger.exception("Morphology DB async write failed")
+
+    def _trim_pending_morph_futures(self) -> None:
+        self._pending_morph_futures = [
+            future for future in self._pending_morph_futures if not future.done()
+        ]
+
+    def wait_for_pending_morphology(self, timeout: float | None = None) -> None:
+        futures: list[Future[None]]
+        with self._pending_morph_lock:
+            self._trim_pending_morph_futures()
+            futures = list(self._pending_morph_futures)
+        if not futures:
+            return
+        for future in futures:
+            try:
+                future.result(timeout=timeout)
+            except Exception:
+                self.logger.exception("Morphology DB async wait failed")
 
     def _persist_morphology(
         self,
@@ -71,10 +110,37 @@ class KokoroState:
         ]
         if not morph_parts:
             return
-        try:
-            self.morphology_repository.ingest_dialogue_parts(morph_parts, source=source)
-        except Exception:
-            self.logger.exception("Morphology DB write failed")
+
+        if self._morph_executor is None:
+            try:
+                self.morphology_repository.ingest_dialogue_parts(morph_parts, source=source)
+            except Exception:
+                self.logger.exception("Morphology DB write failed")
+            return
+
+        should_write_sync = False
+        with self._pending_morph_lock:
+            self._trim_pending_morph_futures()
+            if len(self._pending_morph_futures) >= self.morphology_async_max_pending:
+                should_write_sync = True
+            else:
+                payload = tuple(tuple(segment for segment in segments) for segments in morph_parts)
+                future = self._morph_executor.submit(
+                    self.morphology_repository.ingest_dialogue_parts,
+                    payload,
+                    source=source,
+                )
+                future.add_done_callback(self._on_morph_ingest_done)
+                self._pending_morph_futures.append(future)
+        if should_write_sync:
+            self.logger.warning(
+                "Morphology ingest queue is full (%s pending); writing synchronously",
+                self.morphology_async_max_pending,
+            )
+            try:
+                self.morphology_repository.ingest_dialogue_parts(morph_parts, source=source)
+            except Exception:
+                self.logger.exception("Morphology DB write failed")
 
     def tokenize_first(
         self,
@@ -234,6 +300,21 @@ class KokoroState:
             return self.ui_hooks.error(error)
         return error
 
+    def _pause_tensor(self, sample_count: int) -> torch.Tensor | None:
+        if sample_count <= 0:
+            return None
+        cached = self._pause_tensor_cache.get(sample_count)
+        if cached is None:
+            cached = torch.zeros(sample_count)
+            self._pause_tensor_cache[sample_count] = cached
+        return cached
+
+    def _pause_audio_numpy(self, sample_count: int):
+        pause_tensor = self._pause_tensor(sample_count)
+        if pause_tensor is None:
+            return None
+        return pause_tensor.numpy()
+
     def _generate_audio_for_text(
         self,
         text: str,
@@ -249,7 +330,7 @@ class KokoroState:
         pack = self.model_manager.get_voice_pack(voice)
         use_gpu = use_gpu and self.cuda_available
         pause_samples = max(0, int(pause_seconds * SAMPLE_RATE))
-        pause_tensor = torch.zeros(pause_samples) if pause_samples else None
+        pause_tensor = self._pause_tensor(pause_samples)
         segments: list[torch.Tensor] = []
         first_ps = ""
         model_cpu = None
@@ -285,6 +366,36 @@ class KokoroState:
         if not segments:
             return None, first_ps
         return torch.cat(segments), first_ps
+
+    def prewarm_inference(
+        self,
+        *,
+        voice: str = "af_heart",
+        use_gpu: bool | None = None,
+        style_preset: str = "neutral",
+    ) -> None:
+        if use_gpu is None:
+            use_gpu = self.cuda_available
+        use_gpu = bool(use_gpu and self.cuda_available)
+        pipeline = self.model_manager.get_pipeline(voice)
+        pack = self.model_manager.get_voice_pack(voice)
+        model_cpu = None if use_gpu else self.model_manager.get_model(False)
+        warm_text = "Warm up."
+        with torch.inference_mode():
+            for _, ps, _ in self._run_pipeline(
+                warm_text,
+                voice,
+                1.0,
+                style_preset,
+                pipeline,
+            ):
+                ref_s = pack[len(ps) - 1]
+                if use_gpu:
+                    audio = self._forward_gpu(ps, ref_s, 1.0)
+                else:
+                    audio = model_cpu(ps, ref_s, 1.0)
+                _ = audio.detach().cpu()
+                break
 
     def generate_first(
         self,
@@ -361,8 +472,9 @@ class KokoroState:
                 last_segment_pause_seconds = segment_pause_seconds
                 if segment_index < len(segments) - 1:
                     segment_pause_samples = max(0, int(segment_pause_seconds * SAMPLE_RATE))
-                    if segment_pause_samples:
-                        part_segments.append(torch.zeros(segment_pause_samples))
+                    pause_tensor = self._pause_tensor(segment_pause_samples)
+                    if pause_tensor is not None:
+                        part_segments.append(pause_tensor)
             if not part_segments:
                 continue
             part_audio = torch.cat(part_segments)
@@ -380,8 +492,9 @@ class KokoroState:
             combined_segments.append(part_audio)
             if index < len(parts) - 1:
                 part_pause_samples = max(0, int(last_segment_pause_seconds * SAMPLE_RATE))
-                if part_pause_samples:
-                    combined_segments.append(torch.zeros(part_pause_samples))
+                pause_tensor = self._pause_tensor(part_pause_samples)
+                if pause_tensor is not None:
+                    combined_segments.append(pause_tensor)
         if not combined_segments:
             self.logger.debug("Generate produced no segments")
             self.last_saved_paths = []
@@ -456,9 +569,7 @@ class KokoroState:
                         segment_pause_seconds = segment.pause_seconds
                     keep_sentences = segment_pause_seconds > 0
                     segment_pause_samples = max(0, int(segment_pause_seconds * SAMPLE_RATE))
-                    pause_audio = (
-                        torch.zeros(segment_pause_samples).numpy() if segment_pause_samples else None
-                    )
+                    pause_audio = self._pause_audio_numpy(segment_pause_samples)
                     segment_voice = segment.voice
                     pipeline = self.model_manager.get_pipeline(segment_voice)
                     pack = self.model_manager.get_voice_pack(segment_voice)

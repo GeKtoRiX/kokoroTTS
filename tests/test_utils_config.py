@@ -41,16 +41,14 @@ def test_load_config_reads_env_and_sets_duplicate_limits(monkeypatch, tmp_path):
     monkeypatch.setenv("MORPH_DB_PATH", str(tmp_path / "data" / "morph.sqlite3"))
     monkeypatch.setenv("MORPH_DB_TABLE_PREFIX", "prefix_")
     monkeypatch.setenv("MORPH_LOCAL_EXPRESSIONS_ENABLED", "true")
-    monkeypatch.setenv("LM_VERIFY_ENABLED", "yes")
-    monkeypatch.setenv("LM_STUDIO_TIMEOUT_SECONDS", "1")  # below min (except 0) -> clamped
-    monkeypatch.setenv("LM_VERIFY_BASE_URL", "http://localhost:1234/v1")
-    monkeypatch.setenv("LM_VERIFY_API_KEY", "verify-key")
-    monkeypatch.setenv("LM_VERIFY_MODEL", "mistral-small")
-    monkeypatch.setenv("LM_VERIFY_TIMEOUT_SECONDS", "1")  # below min -> clamped
-    monkeypatch.setenv("LM_VERIFY_TEMPERATURE", "99")  # above max -> clamped
-    monkeypatch.setenv("LM_VERIFY_MAX_TOKENS", "1")  # below min -> clamped
-    monkeypatch.setenv("LM_VERIFY_MAX_RETRIES", "999")  # above max -> clamped
-    monkeypatch.setenv("LM_VERIFY_WORKERS", "0")  # below min -> clamped
+    monkeypatch.setenv("TORCH_NUM_THREADS", "12")
+    monkeypatch.setenv("TORCH_NUM_INTEROP_THREADS", "2")
+    monkeypatch.setenv("TTS_PREWARM_ENABLED", "1")
+    monkeypatch.setenv("TTS_PREWARM_ASYNC", "0")
+    monkeypatch.setenv("TTS_PREWARM_VOICE", "bf_emma")
+    monkeypatch.setenv("TTS_PREWARM_STYLE", "narrator")
+    monkeypatch.setenv("MORPH_ASYNC_INGEST", "0")
+    monkeypatch.setenv("MORPH_ASYNC_MAX_PENDING", "17")
     monkeypatch.setenv("SPACE_ID", "hexgrad/Kokoro-TTS")
 
     config = load_config()
@@ -70,28 +68,16 @@ def test_load_config_reads_env_and_sets_duplicate_limits(monkeypatch, tmp_path):
     assert config.morph_db_enabled is True
     assert config.morph_db_table_prefix == "prefix_"
     assert config.morph_local_expressions_enabled is True
-    assert config.lm_verify_enabled is True
-    assert config.lm_studio_timeout_seconds == 5
-    assert config.lm_verify_base_url == "http://localhost:1234/v1"
-    assert config.lm_verify_api_key == "verify-key"
-    assert config.lm_verify_model == "mistral-small"
-    assert config.lm_verify_timeout_seconds == 5
-    assert config.lm_verify_temperature == 2.0
-    assert config.lm_verify_max_tokens == 64
-    assert config.lm_verify_max_retries == 5
-    assert config.lm_verify_workers == 1
+    assert config.torch_num_threads == 12
+    assert config.torch_num_interop_threads == 2
+    assert config.tts_prewarm_enabled is True
+    assert config.tts_prewarm_async is False
+    assert config.tts_prewarm_voice == "bf_emma"
+    assert config.tts_prewarm_style == "narrator"
+    assert config.morph_async_ingest is False
+    assert config.morph_async_max_pending == 17
     assert config.is_duplicate is False
     assert config.char_limit == 5000
-
-
-def test_load_config_allows_zero_timeout_for_no_limit(monkeypatch):
-    monkeypatch.setenv("LM_STUDIO_TIMEOUT_SECONDS", "0")
-    monkeypatch.setenv("LM_VERIFY_TIMEOUT_SECONDS", "0")
-
-    config = load_config()
-
-    assert config.lm_studio_timeout_seconds == 0
-    assert config.lm_verify_timeout_seconds == 0
 
 
 def test_load_config_for_duplicate_space_has_no_char_limit(monkeypatch):
@@ -105,3 +91,6 @@ def test_load_config_for_duplicate_space_has_no_char_limit(monkeypatch):
     assert config.char_limit is None
     assert config.default_concurrency_limit is None
     assert config.morph_local_expressions_enabled is False
+    assert config.tts_prewarm_enabled is True
+    assert config.tts_prewarm_async is False
+    assert config.morph_async_ingest is False

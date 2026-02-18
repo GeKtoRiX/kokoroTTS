@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
+import time
 import torch
 
 from kokoro_tts.application.state import KokoroState
@@ -319,3 +321,35 @@ def test_set_aux_features_enabled_disables_morphology_persist():
     result, _ = state.generate_first("hello world", save_outputs=False, use_gpu=False)
     assert result is not None
     assert morph.rows == []
+
+
+def test_prewarm_inference_runs_pipeline_and_model():
+    state, manager, _, _ = _build_state()
+    state.prewarm_inference(voice="af_heart", use_gpu=False, style_preset="neutral")
+    assert manager.pipeline.calls
+    assert manager.cpu_model.calls
+
+
+def test_async_morphology_ingest_enqueue_and_flush():
+    class _SlowMorphRepo:
+        def __init__(self):
+            self.rows = []
+
+        def ingest_dialogue_parts(self, parts, *, source):
+            time.sleep(0.01)
+            self.rows.append((parts, source))
+
+    morph = _SlowMorphRepo()
+    state, _, _, _ = _build_state(morph_repo=morph)
+    state.morphology_async_ingest = True
+    state._morph_executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="morph-test",
+    )
+    state._persist_morphology(
+        [[DialogueSegment("af_heart", "hello world", "neutral", None)]],
+        source="generate_first",
+    )
+    state.wait_for_pending_morphology(timeout=2.0)
+    state._morph_executor.shutdown(wait=True)
+    assert morph.rows

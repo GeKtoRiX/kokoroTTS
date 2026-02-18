@@ -25,32 +25,20 @@ class PronunciationRepository:
         if not self.path:
             return {}
         with self._lock:
-            try:
-                mtime = os.path.getmtime(self.path)
-            except FileNotFoundError:
-                self._cached_rules = {}
-                self._cached_mtime = None
-                self._loaded = True
-                return {}
-            except Exception:
-                self.logger.exception(
-                    "Failed to inspect pronunciation rules file: %s",
-                    self.path,
-                )
-                return copy.deepcopy(self._cached_rules)
-            if self._loaded and self._cached_mtime == mtime:
-                return copy.deepcopy(self._cached_rules)
-            try:
-                with open(self.path, "r", encoding="utf-8") as handle:
-                    payload = json.load(handle)
-                normalized = self._normalize_rules(payload)
-            except Exception:
-                self.logger.exception("Failed to load pronunciation rules: %s", self.path)
-                return copy.deepcopy(self._cached_rules)
-            self._cached_rules = normalized
-            self._cached_mtime = mtime
-            self._loaded = True
+            self._refresh_cache_locked()
             return copy.deepcopy(self._cached_rules)
+
+    def load_rules_shared(self) -> tuple[dict[str, dict[str, str]], bool]:
+        """
+        Return an internal cached rules mapping and changed flag.
+
+        The returned mapping is shared and must be treated as read-only.
+        """
+        if not self.path:
+            return {}, False
+        with self._lock:
+            changed = self._refresh_cache_locked()
+            return self._cached_rules, changed
 
     def parse_rules_json(self, raw_json: str) -> dict[str, dict[str, str]]:
         raw_text = str(raw_json or "").strip()
@@ -136,3 +124,38 @@ class PronunciationRepository:
         if normalized in LANGUAGE_LABELS:
             return normalized
         return ""
+
+    def _refresh_cache_locked(self) -> bool:
+        try:
+            mtime = os.path.getmtime(self.path)
+        except FileNotFoundError:
+            changed = self._loaded and (
+                self._cached_mtime is not None or bool(self._cached_rules)
+            )
+            self._cached_rules = {}
+            self._cached_mtime = None
+            self._loaded = True
+            return changed
+        except Exception:
+            self.logger.exception(
+                "Failed to inspect pronunciation rules file: %s",
+                self.path,
+            )
+            return False
+
+        if self._loaded and self._cached_mtime == mtime:
+            return False
+
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            normalized = self._normalize_rules(payload)
+        except Exception:
+            self.logger.exception("Failed to load pronunciation rules: %s", self.path)
+            return False
+
+        changed = (not self._loaded) or normalized != self._cached_rules
+        self._cached_rules = normalized
+        self._cached_mtime = mtime
+        self._loaded = True
+        return changed

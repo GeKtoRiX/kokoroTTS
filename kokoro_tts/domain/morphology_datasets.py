@@ -14,9 +14,6 @@ _DATASET_ALIASES: dict[str, str] = {
     "mwe": "expressions",
     "mwes": "expressions",
     "idioms": "expressions",
-    "reviews": "reviews",
-    "review": "reviews",
-    "lm_reviews": "reviews",
 }
 
 
@@ -30,5 +27,5 @@ def normalize_morphology_dataset(dataset: Any, *, default: str = "occurrences") 
 
 
 def morphology_primary_key(dataset: Any) -> str:
-    """Return the primary key column used by CRUD wrappers."""
+    """Return the primary key column for a canonical morphology dataset."""
     return "dedup_key" if normalize_morphology_dataset(dataset) == "lexemes" else "id"

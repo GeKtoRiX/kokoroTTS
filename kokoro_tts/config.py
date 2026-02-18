@@ -7,14 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .utils import parse_float_env, parse_int_env, resolve_path
-
-
-def _parse_timeout_seconds_env(name: str, default: int) -> int:
-    value = parse_int_env(name, default, min_value=0, max_value=86400)
-    if value != 0 and value < 5:
-        return 5
-    return value
+from .utils import parse_int_env, resolve_path
 
 
 @dataclass(frozen=True)
@@ -39,22 +32,19 @@ class AppConfig:
     space_id: str
     is_duplicate: bool
     char_limit: Optional[int]
-    lm_studio_base_url: str = "http://127.0.0.1:1234/v1"
-    lm_studio_api_key: str = "lm-studio"
-    lm_studio_model: str = ""
-    lm_studio_timeout_seconds: int = 120
-    lm_studio_temperature: float = 0.3
-    lm_studio_max_tokens: int = 2048
-    lm_verify_enabled: bool = False
-    lm_verify_base_url: str = "http://127.0.0.1:1234/v1"
-    lm_verify_api_key: str = "lm-studio"
-    lm_verify_model: str = ""
-    lm_verify_timeout_seconds: int = 30
-    lm_verify_temperature: float = 0.0
-    lm_verify_max_tokens: int = 2048
-    lm_verify_max_retries: int = 2
-    lm_verify_workers: int = 1
     morph_local_expressions_enabled: bool = False
+    torch_num_threads: Optional[int] = None
+    torch_num_interop_threads: Optional[int] = None
+    tts_prewarm_enabled: bool = True
+    tts_prewarm_async: bool = False
+    tts_prewarm_voice: str = "af_heart"
+    tts_prewarm_style: str = "neutral"
+    morph_async_ingest: bool = False
+    morph_async_max_pending: int = 8
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
 def load_config() -> AppConfig:
@@ -104,73 +94,30 @@ def load_config() -> AppConfig:
     space_id = os.getenv("SPACE_ID", "")
     is_duplicate = not space_id.startswith("hexgrad/")
     char_limit = None if is_duplicate else 5000
-    lm_studio_base_url = os.getenv(
-        "LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1"
-    ).strip()
-    lm_studio_api_key = os.getenv("LM_STUDIO_API_KEY", "lm-studio").strip() or "lm-studio"
-    lm_studio_model = os.getenv("LM_STUDIO_MODEL", "").strip()
-    lm_studio_timeout_seconds = _parse_timeout_seconds_env(
-        "LM_STUDIO_TIMEOUT_SECONDS",
-        120,
-    )
-    lm_studio_temperature = parse_float_env(
-        "LM_STUDIO_TEMPERATURE",
-        0.3,
-        min_value=0.0,
-        max_value=2.0,
-    )
-    lm_studio_max_tokens = parse_int_env(
-        "LM_STUDIO_MAX_TOKENS",
-        2048,
-        min_value=64,
-        max_value=32768,
-    )
-    lm_verify_enabled = os.getenv("LM_VERIFY_ENABLED", "0").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-    lm_verify_base_url = os.getenv(
-        "LM_VERIFY_BASE_URL", "http://127.0.0.1:1234/v1"
-    ).strip()
-    lm_verify_api_key = os.getenv("LM_VERIFY_API_KEY", "lm-studio").strip() or "lm-studio"
-    lm_verify_model = os.getenv("LM_VERIFY_MODEL", "").strip()
-    lm_verify_timeout_seconds = _parse_timeout_seconds_env(
-        "LM_VERIFY_TIMEOUT_SECONDS",
-        30,
-    )
-    lm_verify_temperature = parse_float_env(
-        "LM_VERIFY_TEMPERATURE",
-        0.0,
-        min_value=0.0,
-        max_value=2.0,
-    )
-    lm_verify_max_tokens = parse_int_env(
-        "LM_VERIFY_MAX_TOKENS",
-        2048,
-        min_value=64,
-        max_value=32768,
-    )
-    lm_verify_max_retries = parse_int_env(
-        "LM_VERIFY_MAX_RETRIES",
-        2,
-        min_value=0,
-        max_value=5,
-    )
-    lm_verify_workers = parse_int_env(
-        "LM_VERIFY_WORKERS",
-        1,
-        min_value=1,
-        max_value=4,
-    )
     morph_local_expressions_enabled = os.getenv(
         "MORPH_LOCAL_EXPRESSIONS_ENABLED", "0"
-    ).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+    ).strip().lower() in ("1", "true", "yes", "on")
+    torch_num_threads = parse_int_env("TORCH_NUM_THREADS", 0, min_value=0, max_value=512)
+    if torch_num_threads == 0:
+        torch_num_threads = None
+    torch_num_interop_threads = parse_int_env(
+        "TORCH_NUM_INTEROP_THREADS",
+        0,
+        min_value=0,
+        max_value=512,
+    )
+    if torch_num_interop_threads == 0:
+        torch_num_interop_threads = None
+    tts_prewarm_enabled = _env_flag("TTS_PREWARM_ENABLED", "1")
+    tts_prewarm_async = _env_flag("TTS_PREWARM_ASYNC", "0")
+    tts_prewarm_voice = os.getenv("TTS_PREWARM_VOICE", "af_heart").strip() or "af_heart"
+    tts_prewarm_style = os.getenv("TTS_PREWARM_STYLE", "neutral").strip().lower() or "neutral"
+    morph_async_ingest = _env_flag("MORPH_ASYNC_INGEST", "0")
+    morph_async_max_pending = parse_int_env(
+        "MORPH_ASYNC_MAX_PENDING",
+        8,
+        min_value=1,
+        max_value=256,
     )
     return AppConfig(
         log_level=log_level,
@@ -193,20 +140,13 @@ def load_config() -> AppConfig:
         space_id=space_id,
         is_duplicate=is_duplicate,
         char_limit=char_limit,
-        lm_studio_base_url=lm_studio_base_url,
-        lm_studio_api_key=lm_studio_api_key,
-        lm_studio_model=lm_studio_model,
-        lm_studio_timeout_seconds=lm_studio_timeout_seconds,
-        lm_studio_temperature=lm_studio_temperature,
-        lm_studio_max_tokens=lm_studio_max_tokens,
-        lm_verify_enabled=lm_verify_enabled,
-        lm_verify_base_url=lm_verify_base_url,
-        lm_verify_api_key=lm_verify_api_key,
-        lm_verify_model=lm_verify_model,
-        lm_verify_timeout_seconds=lm_verify_timeout_seconds,
-        lm_verify_temperature=lm_verify_temperature,
-        lm_verify_max_tokens=lm_verify_max_tokens,
-        lm_verify_max_retries=lm_verify_max_retries,
-        lm_verify_workers=lm_verify_workers,
         morph_local_expressions_enabled=morph_local_expressions_enabled,
+        torch_num_threads=torch_num_threads,
+        torch_num_interop_threads=torch_num_interop_threads,
+        tts_prewarm_enabled=tts_prewarm_enabled,
+        tts_prewarm_async=tts_prewarm_async,
+        tts_prewarm_voice=tts_prewarm_voice,
+        tts_prewarm_style=tts_prewarm_style,
+        morph_async_ingest=morph_async_ingest,
+        morph_async_max_pending=morph_async_max_pending,
     )

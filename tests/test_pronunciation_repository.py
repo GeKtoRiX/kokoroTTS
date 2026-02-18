@@ -1,5 +1,7 @@
 import json
+import os
 from pathlib import Path
+import time
 
 from kokoro_tts.storage.pronunciation_repository import PronunciationRepository
 
@@ -68,3 +70,25 @@ def test_pronunciation_repository_rejects_invalid_json(tmp_path: Path):
         assert "Invalid JSON" in str(exc)
     else:
         raise AssertionError("Expected invalid JSON error")
+
+
+def test_pronunciation_repository_load_rules_shared_change_detection(tmp_path: Path):
+    path = tmp_path / "rules.json"
+    path.write_text('{"a":{"hello":"h"}}', encoding="utf-8")
+    now = time.time()
+    os.utime(path, (now + 1.0, now + 1.0))
+    repo = PronunciationRepository(str(path), logger_instance=_Logger())
+
+    rules, changed = repo.load_rules_shared()
+    assert changed is True
+    assert rules["a"]["hello"] == "h"
+
+    _, changed = repo.load_rules_shared()
+    assert changed is False
+
+    path.write_text('{"a":{"hello":"h","world":"w"}}', encoding="utf-8")
+    now = time.time()
+    os.utime(path, (now + 2.0, now + 2.0))
+    rules, changed = repo.load_rules_shared()
+    assert changed is True
+    assert rules["a"]["world"] == "w"

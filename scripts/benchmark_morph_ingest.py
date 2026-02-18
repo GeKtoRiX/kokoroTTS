@@ -29,11 +29,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=200,
         help="Approximate token count in each segment.",
     )
-    parser.add_argument(
-        "--with-verify",
-        action="store_true",
-        help="Enable sentence-level review segment preparation.",
-    )
     return parser
 
 
@@ -84,12 +79,10 @@ def main(argv: list[str] | None = None) -> int:
         db_path=":memory:",
         analyzer=_analyzer,
         expression_extractor=_expression_extractor,
-        lm_verifier=(lambda _payload: {}) if args.with_verify else None,
-        lm_verify_enabled=bool(args.with_verify),
     )
 
     started_at = time.perf_counter()
-    token_rows, expression_rows, review_segments = repository._collect_ingest_rows(
+    token_rows, expression_rows = repository._collect_ingest_rows(
         parts,
         source="benchmark",
     )
@@ -99,7 +92,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"segments={segment_count}")
     print(f"tokens={len(token_rows)}")
     print(f"expressions={len(expression_rows)}")
-    print(f"review_segments={len(review_segments)}")
     print(f"elapsed_seconds={elapsed:.6f}")
     return 0
 

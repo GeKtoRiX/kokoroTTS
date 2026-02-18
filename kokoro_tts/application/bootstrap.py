@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Mapping
 
 from ..config import AppConfig
 from ..constants import SAMPLE_RATE
 from ..domain.expressions import extract_english_expressions
 from ..domain.normalization import TextNormalizer
-from ..integrations.lm_studio import PosVerifyRequest, verify_pos_with_context
 from ..integrations.model_manager import ModelManager
 from ..integrations.spaces_gpu import build_forward_gpu
 from ..storage.audio_writer import AudioWriter
@@ -20,8 +19,6 @@ from ..ui.tkinter_app import create_tkinter_app
 from .history_service import HistoryService
 from .state import KokoroState
 from .ui_hooks import UiHooks
-
-LmVerifier = Callable[[dict[str, object]], dict[str, object]]
 
 
 @dataclass(frozen=True)
@@ -37,36 +34,6 @@ class AppServices:
     app: DesktopApp
 
 
-def build_lm_verifier(config: AppConfig, logger) -> LmVerifier | None:
-    """Create an LM verifier callable when verify settings are configured."""
-    if config.lm_verify_enabled and config.lm_verify_model:
-
-        def _lm_verifier(payload: dict[str, object]) -> dict[str, object]:
-            raw_tokens = payload.get("tokens", [])
-            raw_locked = payload.get("locked_expressions", [])
-            return verify_pos_with_context(
-                PosVerifyRequest(
-                    segment_text=str(payload.get("segment_text", "")),
-                    tokens=raw_tokens if isinstance(raw_tokens, list) else [],
-                    locked_expressions=raw_locked if isinstance(raw_locked, list) else [],
-                    base_url=config.lm_verify_base_url,
-                    api_key=config.lm_verify_api_key,
-                    model=config.lm_verify_model,
-                    timeout_seconds=config.lm_verify_timeout_seconds,
-                    temperature=config.lm_verify_temperature,
-                    max_tokens=config.lm_verify_max_tokens,
-                )
-            )
-
-        return _lm_verifier
-
-    if config.lm_verify_enabled:
-        logger.warning(
-            "LM verify is enabled but LM_VERIFY_MODEL is empty; background verification is disabled."
-        )
-    return None
-
-
 def initialize_app_services(
     *,
     config: AppConfig,
@@ -79,18 +46,12 @@ def initialize_app_services(
     predict,
     export_morphology_sheet,
     morphology_db_view,
-    morphology_db_add,
-    morphology_db_update,
-    morphology_db_delete,
     load_pronunciation_rules,
     apply_pronunciation_rules,
     import_pronunciation_rules,
     export_pronunciation_rules,
-    build_lesson_for_tts,
     set_tts_only_mode=None,
-    set_llm_only_mode=None,
     tts_only_mode_default: bool = False,
-    llm_only_mode_default: bool = False,
     choices: Mapping[str, str],
 ) -> AppServices:
     """Construct all runtime services and return a typed service bundle."""
@@ -119,13 +80,11 @@ def initialize_app_services(
     )
     audio_writer = AudioWriter(config.output_dir, SAMPLE_RATE, logger)
 
-    lm_verifier = build_lm_verifier(config, logger)
-
     if config.morph_local_expressions_enabled:
         logger.info("Local expression extraction is enabled.")
     else:
         logger.info(
-            "Local expression extraction is disabled; phrasal verbs and idioms are expected from LM verify."
+            "Local expression extraction is disabled."
         )
 
     morphology_repository = MorphologyRepository(
@@ -138,11 +97,6 @@ def initialize_app_services(
             if config.morph_local_expressions_enabled
             else (lambda _text: [])
         ),
-        lm_verifier=lm_verifier,
-        lm_verify_enabled=config.lm_verify_enabled,
-        lm_verify_model=config.lm_verify_model,
-        lm_verify_retries=config.lm_verify_max_retries,
-        lm_verify_workers=config.lm_verify_workers,
     )
 
     forward_gpu = build_forward_gpu(model_manager)
@@ -163,6 +117,8 @@ def initialize_app_services(
         gpu_forward=forward_gpu,
         ui_hooks=ui_hooks,
         morphology_repository=morphology_repository,
+        morphology_async_ingest=config.morph_async_ingest,
+        morphology_async_max_pending=config.morph_async_max_pending,
     )
     history_repository = HistoryRepository(config.output_dir_abs, logger)
     history_service = HistoryService(
@@ -182,18 +138,12 @@ def initialize_app_services(
         predict=predict,
         export_morphology_sheet=export_morphology_sheet,
         morphology_db_view=morphology_db_view,
-        morphology_db_add=morphology_db_add,
-        morphology_db_update=morphology_db_update,
-        morphology_db_delete=morphology_db_delete,
         load_pronunciation_rules=load_pronunciation_rules,
         apply_pronunciation_rules=apply_pronunciation_rules,
         import_pronunciation_rules=import_pronunciation_rules,
         export_pronunciation_rules=export_pronunciation_rules,
-        build_lesson_for_tts=build_lesson_for_tts,
         set_tts_only_mode=set_tts_only_mode,
-        set_llm_only_mode=set_llm_only_mode,
         tts_only_mode_default=tts_only_mode_default,
-        llm_only_mode_default=llm_only_mode_default,
         history_service=history_service,
         choices=choices,
     )

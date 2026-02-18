@@ -9,8 +9,7 @@ Local Tkinter desktop app for `hexgrad/Kokoro-82M` with:
 - text normalization (time/number)
 - style presets (`neutral`, `narrator`, `energetic`)
 - output formats `wav/mp3/ogg` (ffmpeg fallback handling)
-- lesson text builder via LM Studio OpenAI-compatible API
-- morphology SQLite CRUD tab (view/add/edit/delete)
+- morphology SQLite read-only preview tab
 
 ## Known issues
 
@@ -56,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_full.ps1
 
 - `doctor.ps1` verifies `.venv`, package imports, tool paths, and `KPipeline` init for `a,b,e,f,h,i,j,p,z`.
 - `smoke_full.ps1` runs runtime checks for generate/stream/dialogue/mix/split/output formats/multilingual voices.
-- `check_english_lexemes.py` performs a real lexeme split smoke check for English text; add `--verify-llm` to run an extra LM Studio POS verification pass (`LM_VERIFY_*` env vars).
+- `check_english_lexemes.py` performs a real lexeme split smoke check for English text.
 
 ## Maintenance scripts (.bat)
 
@@ -92,7 +91,12 @@ Synthetic ingest benchmark:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\benchmark_morph_ingest.py --parts 5 --segments-per-part 120 --tokens-per-segment 200
-.\.venv\Scripts\python.exe scripts\benchmark_morph_ingest.py --parts 5 --segments-per-part 120 --tokens-per-segment 200 --with-verify
+```
+
+Real TTS inference profiling (first vs warm latency, CPU/GPU):
+
+```powershell
+.\.venv\Scripts\python.exe scripts\profile_tts_inference.py --mode both --warm-runs 3 --tts-only 1 --save-outputs 0
 ```
 
 ## Environment variables
@@ -108,94 +112,79 @@ Create/edit `.env` (or start from `.env.example`):
 - `NORMALIZE_TIMES`, `NORMALIZE_NUMBERS`
 - `DEFAULT_OUTPUT_FORMAT` (`wav|mp3|ogg`)
 - `DEFAULT_CONCURRENCY_LIMIT`
-- `TTS_ONLY_MODE` (`1` disables Morphology DB writes and all LLM requests)
-- `LLM_ONLY_MODE` (`1` enables `TTS + Morphology` mode: disables LLM requests, keeps Morphology DB writes enabled)
+- `TTS_ONLY_MODE` (`1` disables Morphology DB writes)
 - `LOG_LEVEL`, `FILE_LOG_LEVEL`, `LOG_DIR`
 - `LOG_EVERY_N_SEGMENTS`
+- `TORCH_NUM_THREADS`, `TORCH_NUM_INTEROP_THREADS` (`0` keeps torch defaults)
+- `TTS_PREWARM_ENABLED`, `TTS_PREWARM_ASYNC`, `TTS_PREWARM_VOICE`, `TTS_PREWARM_STYLE`
 - `MORPH_DB_ENABLED`, `MORPH_DB_PATH`, `MORPH_DB_TABLE_PREFIX`
 - `MORPH_LOCAL_EXPRESSIONS_ENABLED` (`0` by default; set `1` to re-enable local phrasal/idiom extractor)
+- `MORPH_ASYNC_INGEST` (`0` by default; optional background morphology DB writes)
+- `MORPH_ASYNC_MAX_PENDING` (max pending async morphology tasks before sync fallback)
 - `PRONUNCIATION_RULES_PATH` (default `data/pronunciation_rules.json`)
 - `WORDNET_DATA_DIR`, `WORDNET_AUTO_DOWNLOAD`, `SPACY_EN_MODEL_AUTO_DOWNLOAD`
-- `LM_STUDIO_BASE_URL`, `LM_STUDIO_API_KEY`, `LM_STUDIO_MODEL`
-- `LM_STUDIO_TIMEOUT_SECONDS`, `LM_STUDIO_TEMPERATURE`, `LM_STUDIO_MAX_TOKENS`
-- `LM_VERIFY_ENABLED`, `LM_VERIFY_BASE_URL`, `LM_VERIFY_API_KEY`, `LM_VERIFY_MODEL`
-- `LM_VERIFY_TIMEOUT_SECONDS`, `LM_VERIFY_TEMPERATURE`, `LM_VERIFY_MAX_TOKENS`
-- `LM_VERIFY_MAX_RETRIES`, `LM_VERIFY_WORKERS`
-
-For LLM timeouts, set `LM_STUDIO_TIMEOUT_SECONDS=0` or `LM_VERIFY_TIMEOUT_SECONDS=0` to wait without a timeout.
+- `MORPH_SPACY_MODELS` (comma-separated spaCy model priority, default tries `trf,lg,md,sm`)
+- `MORPH_STANZA_PACKAGE`, `MORPH_STANZA_USE_GPU`
+- `MORPH_FLAIR_ENABLED` (`1` by default), `MORPH_FLAIR_MODELS` (comma-separated Flair model priority)
+- `MORPH_TEXTACY_ENABLED` (`1` by default), `MORPH_PHRASEMACHINE_ENABLED` (`1` by default)
+- `MORPH_PYWSD_ENABLED` (`0` by default; optional idiom noise filter)
+- `MORPH_PYWSD_AUTO_DOWNLOAD` (`1` by default; downloads required NLTK resources for PyWSD)
+- `SPACY_EN_AUTO_DOWNLOAD_MODELS` (comma-separated, default `en_core_web_sm`)
 
 When `MORPH_DB_ENABLED=1`, each `generate` run writes English token analysis into SQLite:
 - `<prefix>lexemes` (deduplicated by key, insert-ignore only)
 - `<prefix>token_occurrences` (token occurrences, insert-ignore only)
 - `<prefix>expressions` (phrasal verbs and idioms)
-- `<prefix>reviews` (LM verification results, local-vs-LM comparison)
-
-When `LM_VERIFY_ENABLED=1` and `LM_VERIFY_MODEL` is set, morphology ingest runs a background
-LM Studio verification pass for English text sentence-by-sentence (one request per sentence).
-Local tags remain the source of truth.
-By default (`MORPH_LOCAL_EXPRESSIONS_ENABLED=0`), phrasal verbs and idioms are taken from
-LM verify `new_expressions` and merged into the same DB ingest flow.
-If LM verify is disabled and local expressions are also disabled, `expressions` table may remain empty.
 
 Generated files are grouped by date inside `OUTPUT_DIR`:
 - `OUTPUT_DIR/YYYY-MM-DD/records` for audio files
 - `OUTPUT_DIR/YYYY-MM-DD/vocabulary` for morphology exports (`.ods`/`.csv`/`.txt`/`.xlsx`)
 
 UI includes a `Morphology DB Export` accordion with selectable export format (`.ods`, `.csv`, `.txt`, `.xlsx`)
-for `lexemes`, `token_occurrences`, `expressions`, `reviews`, or `General table`.
+for `lexemes`, `token_occurrences`, `expressions`, or `General table`.
 `General table` export uses columns by parts of speech (Noun, Verb, Adjective, etc.) and rows with words.
 
-UI also includes a `Morphology DB` tab with basic CRUD operations for `morphology.sqlite3`:
-- browse rows by dataset (`lexemes`, `occurrences`, `expressions`, `reviews`)
-- add row from JSON
-- update row by `id` (or `dedup_key` for `lexemes`)
-- delete row by `id` (or `dedup_key` for `lexemes`)
-
-CRUD JSON examples:
-
-```json
-{"source":"manual","token_text":"Cats","lemma":"cat","upos":"NOUN"}
-```
-
-Add row example for `occurrences`.
-
-```json
-{"token_text":"Dogs","lemma":"dog"}
-```
-
-Update row example for `occurrences` with `row id = 15`.
-
-Delete example: set `row id = 15` and click `Delete row`.
-For `lexemes`, use `dedup_key` as row id, for example: `run|verb`.
+UI also includes a read-only `Morphology DB` tab for browsing datasets
+(`lexemes`, `occurrences`, `expressions`).
+Manual row edits are intentionally removed from the app; use an external DB tool.
 
 UI also includes a `Pronunciation dictionary` accordion:
 - load/apply persistent JSON rules without restart
 - import rules from `.json`
 - export current rules to `OUTPUT_DIR/YYYY-MM-DD/vocabulary`
 
-UI also includes a `Lesson Builder (LLM)` tab:
-- sends raw text to LM Studio over OpenAI-compatible Chat Completions API
-- rewrites it into an English lesson script with detailed exercise explanations
-- allows inserting generated lesson text back into the main TTS input
-
 UI includes a `Runtime mode` accordion with a single mode selector:
 - `Default`
 - `TTS + Morphology`
-- `Full`
 
 Mode behavior:
-- `Default` is plain TTS: morphology ingest/DB writes and all LLM requests are disabled.
-- `TTS + Morphology` disables LLM requests but keeps morphology ingest/DB writes enabled.
-- `Full` enables TTS + morphology + LLM.
-- In `TTS + Morphology`, local phrasal verbs/idioms extraction is forced on even when `MORPH_LOCAL_EXPRESSIONS_ENABLED=0`.
+- `Default` is plain TTS: morphology ingest/DB writes are disabled.
+- `TTS + Morphology` keeps morphology ingest/DB writes enabled.
 - Tab visibility follows mode:
-- `Default`: hides `Lesson Builder` and `Morphology DB` tabs.
-- `TTS + Morphology`: hides `Lesson Builder`, shows `Morphology DB`.
-- `Full`: shows both `Lesson Builder` and `Morphology DB`.
+- `Default`: hides `Morphology DB`.
+- `TTS + Morphology`: shows `Morphology DB`.
 
 Expression detection uses:
 - spaCy `DependencyMatcher` for verb + particle phrasal verbs (lemma-based)
+- WordNet-window matcher for separable phrasal verbs when dependency parse misses
+- optional `textacy` token-pattern matcher for verb-particle windows
+- optional `phrasemachine` phrase spans as additional phrasal candidates
 - WordNet-powered phrase matching for idioms (WordNet is downloaded locally to `WORDNET_DATA_DIR`)
+- optional `pywsd` context filter for noisy idioms
+
+Lexeme tagging cascade is:
+- Stanza (primary)
+- spaCy (merge/backfill)
+- Flair POS tagger (optional fallback for unresolved tags)
+- deterministic heuristics (`NUM`, `SYM`, `X`) as final fallback
+
+High-accuracy setup (recommended):
+- install `spacy-transformers` (already in `requirements.txt` for Python < 3.14)
+- download transformer model with `python -m spacy download en_core_web_trf`
+- set `MORPH_SPACY_MODELS=en_core_web_trf,en_core_web_lg,en_core_web_md,en_core_web_sm`
+
+Important: do not install `en_core_web_trf` from PyPI package name `en-core-web-trf`; this
+name is a placeholder and points to `spacy package` download flow.
 
 `run.bat` auto-loads `.env` and auto-detects local tools under `tools/` when variables are not set.
 

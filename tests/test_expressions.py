@@ -11,9 +11,11 @@ class _FakeToken:
         self.text = text
         self.lemma_ = lemma
         self.pos_ = pos
+        self.tag_ = pos
         self.dep_ = dep
         self.idx = idx
         self.i = i
+        self.is_punct = pos == "PUNCT"
 
 
 class _FakeSpan:
@@ -30,6 +32,7 @@ class _FakeSpan:
 class _FakeDoc:
     def __init__(self, tokens):
         self.tokens = tokens
+        self.text = " ".join(token.text for token in tokens)
 
     def __getitem__(self, item):
         if isinstance(item, slice):
@@ -38,6 +41,9 @@ class _FakeDoc:
 
     def __iter__(self):
         return iter(self.tokens)
+
+    def __len__(self):
+        return len(self.tokens)
 
 
 def test_extract_english_expressions_returns_empty_without_model(monkeypatch):
@@ -82,6 +88,9 @@ def test_extract_english_expressions_merges_and_sorts(monkeypatch):
             )
         ],
     )
+    monkeypatch.setattr(e, "_extract_inventory_phrasals", lambda _doc, _inv: [])
+    monkeypatch.setattr(e, "_extract_textacy_phrasals", lambda _doc, _inv: [])
+    monkeypatch.setattr(e, "_extract_phrasemachine_phrasals", lambda _doc, _inv: [])
 
     items = e.extract_english_expressions("look up and then kick the bucket")
     assert [item["kind"] for item in items] == ["phrasal_verb", "idiom"]
@@ -129,6 +138,123 @@ def test_extract_dependency_phrasals_relaxed_deps_require_wordnet(monkeypatch):
     assert "run into" in lemmas
     assert "look forward" in lemmas
     assert "move away" not in lemmas
+
+
+def test_extract_inventory_phrasals_handles_separable_phrasal():
+    tokens = [
+        _FakeToken("looked", "look", "VERB", "ROOT", 0, 0),
+        _FakeToken("it", "it", "PRON", "obj", 7, 1),
+        _FakeToken("up", "up", "PART", "prt", 10, 2),
+    ]
+    doc = _FakeDoc(tokens)
+
+    items = e._extract_inventory_phrasals(doc, {"look up"})
+    assert len(items) == 1
+    assert items[0].lemma == "look up"
+    assert items[0].source == "wordnet_window"
+
+
+def test_extract_textacy_phrasals_matches_wordnet_window(monkeypatch):
+    matcher_module = types.ModuleType("textacy.extract.matches")
+
+    class Span:
+        def __init__(self, start, end):
+            self.start = start
+            self.end = end
+
+    matcher_module.token_matches = lambda _doc, _pattern: [Span(0, 3)]  # type: ignore[attr-defined]
+    extract_module = types.ModuleType("textacy.extract")
+    extract_module.matches = matcher_module  # type: ignore[attr-defined]
+    textacy_module = types.ModuleType("textacy")
+    textacy_module.extract = extract_module  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "textacy", textacy_module)
+    monkeypatch.setitem(sys.modules, "textacy.extract", extract_module)
+    monkeypatch.setitem(sys.modules, "textacy.extract.matches", matcher_module)
+    monkeypatch.setenv("MORPH_TEXTACY_ENABLED", "1")
+
+    doc = _FakeDoc(
+        [
+            _FakeToken("looked", "look", "VERB", "ROOT", 0, 0),
+            _FakeToken("it", "it", "PRON", "obj", 7, 1),
+            _FakeToken("up", "up", "PART", "prt", 10, 2),
+        ]
+    )
+    items = e._extract_textacy_phrasals(doc, {"look up"})
+    assert len(items) == 1
+    assert items[0].lemma == "look up"
+    assert items[0].source == "textacy_matcher"
+
+
+def test_filter_idioms_with_pywsd_drops_context_mismatch(monkeypatch):
+    class Synset:
+        def __init__(self, value, lemmas):
+            self._value = value
+            self._lemmas = lemmas
+
+        def name(self):
+            return self._value
+
+        def lemma_names(self):
+            return self._lemmas
+
+    class WN:
+        def synsets(self, _key):
+            return [Synset("kick_the_bucket.v.01", ["kick_the_bucket"])]
+
+    def simple_lesk(_context, _token, pos=None):
+        _ = pos
+        return Synset("kick.v.01", ["kick"])
+
+    monkeypatch.setenv("MORPH_PYWSD_ENABLED", "1")
+    monkeypatch.setattr(e, "_load_pywsd_components", lambda: (simple_lesk, WN()))
+
+    item = ExpressionItem(
+        text="kicked the bucket",
+        lemma="kick the bucket",
+        kind="idiom",
+        start=3,
+        end=20,
+        key="kick the bucket|idiom",
+        source="wordnet_phrase_matcher",
+        wordnet=True,
+    )
+    doc = _FakeDoc(
+        [
+            _FakeToken("He", "he", "PRON", "nsubj", 0, 0),
+            _FakeToken("kicked", "kick", "VERB", "ROOT", 3, 1),
+            _FakeToken("the", "the", "DET", "det", 10, 2),
+            _FakeToken("bucket", "bucket", "NOUN", "obj", 14, 3),
+        ]
+    )
+    filtered = e._filter_idioms_with_pywsd(doc, [item])
+    assert filtered == []
+
+
+def test_extract_phrasemachine_phrasals_uses_token_spans(monkeypatch):
+    module = types.ModuleType("phrasemachine")
+
+    def get_phrases(tokens=None, postags=None, output=None):
+        _ = tokens
+        _ = postags
+        _ = output
+        return {"token_spans": [(0, 3)]}
+
+    module.get_phrases = get_phrases  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "phrasemachine", module)
+    monkeypatch.setenv("MORPH_PHRASEMACHINE_ENABLED", "1")
+
+    doc = _FakeDoc(
+        [
+            _FakeToken("looked", "look", "VERB", "ROOT", 0, 0),
+            _FakeToken("it", "it", "PRON", "obj", 7, 1),
+            _FakeToken("up", "up", "PART", "prt", 10, 2),
+        ]
+    )
+    items = e._extract_phrasemachine_phrasals(doc, {"look up"})
+    assert len(items) == 1
+    assert items[0].lemma == "look up"
+    assert items[0].source == "phrasemachine"
 
 
 def test_extract_wordnet_idioms_from_lemma_matcher(monkeypatch):
@@ -296,6 +422,7 @@ def test_load_expression_spacy_model_auto_download_success(monkeypatch):
     monkeypatch.setitem(sys.modules, "spacy", spacy_module)
     monkeypatch.setitem(sys.modules, "spacy.cli", cli_module)
     monkeypatch.setenv("SPACY_EN_MODEL_AUTO_DOWNLOAD", "1")
+    monkeypatch.setattr(e, "_spacy_model_candidates", lambda: ["en_core_web_sm"])
     e._load_expression_spacy_model.cache_clear()
     assert e._load_expression_spacy_model() == "loaded-model"
     assert calls["download"] == 1

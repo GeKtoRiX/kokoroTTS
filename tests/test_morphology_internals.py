@@ -119,3 +119,50 @@ def test_load_stanza_pipeline_returns_none_on_error(monkeypatch):
     monkeypatch.setitem(sys.modules, "stanza", FakeStanza())
     assert m._load_stanza_pipeline() is None
     m._load_stanza_pipeline.cache_clear()
+
+
+def test_merge_annotation_sources_prefers_informative_upos_and_lemma():
+    tokens = [RawToken("looked", 0, 6, False, False, False)]
+    first = [TokenAnnotation("looked", "X", {})]
+    second = [TokenAnnotation("look", "VERB", {"Tense": "Past"})]
+
+    merged = m._merge_annotation_sources(tokens, first, second)
+    assert merged is not None
+    assert merged[0] == TokenAnnotation(lemma="look", upos="VERB", feats={"Tense": "Past"})
+
+
+def test_default_annotate_uses_flair_backfill_for_uninformative_tags(monkeypatch):
+    tokens = [RawToken("alpha", 0, 5, False, False, False)]
+    monkeypatch.setattr(
+        m,
+        "_annotate_with_stanza",
+        lambda _tokens: [TokenAnnotation("alpha", "X", {})],
+    )
+    monkeypatch.setattr(
+        m,
+        "_annotate_with_spacy",
+        lambda _text, _tokens: [TokenAnnotation("alpha", "X", {})],
+    )
+    monkeypatch.setattr(
+        m,
+        "_annotate_with_flair",
+        lambda _tokens: [TokenAnnotation("alpha", "NOUN", {})],
+    )
+
+    annotated = m._default_annotate("alpha", tokens)
+    assert annotated[0].upos == "NOUN"
+
+
+def test_normalize_flair_upos_maps_penn_and_subordinator_hint():
+    because = RawToken("because", 0, 7, False, False, False)
+    assert m._normalize_flair_upos("IN", because) == "SCONJ"
+
+    noun = RawToken("cats", 0, 4, False, False, False)
+    assert m._normalize_flair_upos("NNS", noun) == "NOUN"
+
+
+def test_load_flair_tagger_respects_disable_flag(monkeypatch):
+    monkeypatch.setenv("MORPH_FLAIR_ENABLED", "0")
+    m._load_flair_tagger.cache_clear()
+    assert m._load_flair_tagger() is None
+    m._load_flair_tagger.cache_clear()

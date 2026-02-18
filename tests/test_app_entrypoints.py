@@ -133,21 +133,19 @@ def test_export_morphology_sheet_branches(monkeypatch, tmp_path):
     assert "Export failed" in status
 
 
-def test_morphology_db_wrappers_block_reviews_dataset(monkeypatch):
+def test_morphology_db_view_wrapper_loads_rows(monkeypatch):
     class Repo:
         def list_rows(self, dataset, limit, offset):
             _ = (dataset, limit, offset)
             return ["id", "status"], [["1", "success"]]
 
     monkeypatch.setattr(app, "MORPHOLOGY_REPOSITORY", Repo())
+    monkeypatch.setattr(app, "TTS_ONLY_MODE", False)
 
-    _, status_add = app.morphology_db_add("reviews", '{"source":"manual"}', 20, 0)
-    _, status_update = app.morphology_db_update("reviews", "1", '{"status":"failed"}', 20, 0)
-    _, status_delete = app.morphology_db_delete("reviews", "1", 20, 0)
-
-    assert "read-only" in status_add.lower()
-    assert "read-only" in status_update.lower()
-    assert "read-only" in status_delete.lower()
+    table_update, status = app.morphology_db_view("occurrences", 20, 0)
+    assert table_update["headers"] == ["id", "status"]
+    assert table_update["value"] == [["1", "success"]]
+    assert "loaded" in status.lower()
 
 
 def test_launch_handles_skip_mode(monkeypatch):
@@ -241,11 +239,10 @@ def test_pronunciation_dictionary_handlers(monkeypatch, tmp_path):
     assert "Export ready" in status
 
 
-def test_tts_only_mode_blocks_db_and_llm_features(monkeypatch):
+def test_tts_only_mode_blocks_db_features(monkeypatch):
     state = _State()
     monkeypatch.setattr(app, "APP_STATE", state)
     monkeypatch.setattr(app, "TTS_ONLY_MODE", False)
-    monkeypatch.setattr(app, "LLM_ONLY_MODE", False)
 
     status = app.set_tts_only_mode(True)
     assert "enabled" in status.lower()
@@ -253,42 +250,3 @@ def test_tts_only_mode_blocks_db_and_llm_features(monkeypatch):
 
     _, db_status = app.morphology_db_view()
     assert "tts-only mode" in db_status.lower()
-
-    lesson_text, lesson_status = app.build_lesson_for_tts("hello world")
-    assert lesson_text == ""
-    assert "disabled" in lesson_status.lower()
-
-
-def test_llm_only_mode_disables_llm_and_keeps_morphology_enabled(monkeypatch):
-    state = _State()
-
-    class Repo:
-        def __init__(self):
-            self.lm_verify_enabled = True
-            self.lm_verifier = lambda payload: payload
-            self.expression_extractor = lambda _text: []
-
-    repo = Repo()
-    default_extractor = repo.expression_extractor
-
-    monkeypatch.setattr(app, "APP_STATE", state)
-    monkeypatch.setattr(app, "MORPHOLOGY_REPOSITORY", repo)
-    monkeypatch.setattr(app, "MORPH_DEFAULT_EXPRESSION_EXTRACTOR", default_extractor)
-    monkeypatch.setattr(app, "MORPH_DEFAULT_LM_VERIFY_ENABLED", True)
-    monkeypatch.setattr(app, "TTS_ONLY_MODE", False)
-    monkeypatch.setattr(app, "LLM_ONLY_MODE", False)
-
-    status = app.set_llm_only_mode(True)
-    assert "enabled" in status.lower()
-    assert state.aux_features and state.aux_features[-1] is True
-    assert repo.lm_verify_enabled is False
-    assert repo.expression_extractor is app.extract_english_expressions
-
-    lesson_text, lesson_status = app.build_lesson_for_tts("hello world")
-    assert lesson_text == ""
-    assert "disabled" in lesson_status.lower()
-
-    status = app.set_llm_only_mode(False)
-    assert "disabled" in status.lower() or "enabled" in status.lower()
-    assert repo.lm_verify_enabled is True
-    assert repo.expression_extractor is default_extractor

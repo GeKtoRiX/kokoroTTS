@@ -110,12 +110,10 @@ def test_create_tkinter_app_builds_root(tmp_path):
     tab_texts = [app_instance.notebook.tab(tab_id, "text") for tab_id in app_instance.notebook.tabs()]
     assert "Generate" in tab_texts
     assert "Stream" in tab_texts
-    assert "Lesson Builder (LLM)" not in tab_texts
     assert "Morphology DB" not in tab_texts
 
-    app_instance._set_runtime_mode("full", apply_backend=False)
+    app_instance._set_runtime_mode("tts_morph", apply_backend=False)
     tab_texts = [app_instance.notebook.tab(tab_id, "text") for tab_id in app_instance.notebook.tabs()]
-    assert "Lesson Builder (LLM)" in tab_texts
     assert "Morphology DB" in tab_texts
 
     root.withdraw()

@@ -1,7 +1,6 @@
 """Tkinter desktop UI for Kokoro TTS."""
 from __future__ import annotations
 
-import json
 import os
 import threading
 import time
@@ -12,8 +11,12 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Any, Callable, Mapping
 
-import numpy as np
-
+from ..storage.morphology_projection import (
+    build_pos_table_preview_from_lexemes,
+    count_unique_non_empty_cells,
+    format_morphology_preview_table,
+    project_morphology_preview_rows,
+)
 from ..config import AppConfig
 from ..constants import OUTPUT_FORMATS
 from ..domain.style import DEFAULT_STYLE_PRESET, STYLE_PRESET_CHOICES
@@ -29,13 +32,9 @@ from .common import (
     APP_TITLE,
     RUNTIME_MODE_CHOICES,
     RUNTIME_MODE_DEFAULT,
-    RUNTIME_MODE_FULL,
     RUNTIME_MODE_TTS_MORPH,
-    build_morph_update_payload,
     extract_morph_headers,
-    llm_only_mode_status_text,
     normalize_runtime_mode,
-    resolve_morph_delete_confirmation,
     runtime_mode_from_flags,
     runtime_mode_status_text,
     runtime_mode_tab_visibility,
@@ -43,6 +42,15 @@ from .common import (
     tts_only_mode_status_text,
 )
 from .desktop_types import DesktopApp
+from .features.audio_backend import VlcAudioBackend as _FeatureVlcAudioBackend
+from .features.audio_player_feature import (
+    AudioPlayerFeature,
+    configure_runtime_modules as configure_audio_player_runtime_modules,
+)
+from .features.audio_player_runtime_state import AudioPlayerRuntimeState
+from .features.generate_tab_feature import GenerateTabFeature
+from .features.morphology_tab_feature import MorphologyTabFeature
+from .features.stream_tab_feature import StreamTabFeature
 
 try:
     import sounddevice as sd
@@ -61,84 +69,80 @@ except Exception:  # pragma: no cover - dependency optional at import time
 
 
 class VlcAudioBackend:
-    """Thin libVLC wrapper for audio-only playback."""
-
+    """Compatibility wrapper around the feature-module VLC backend."""
     def __init__(self) -> None:
         if vlc is None:
             raise RuntimeError("python-vlc is not available")
-        args = ["--no-xlib"] if sys.platform.startswith("linux") else []
-        self.instance = vlc.Instance(args)
-        self.player = self.instance.media_player_new()
-        self.media = None
+        self._backend = _FeatureVlcAudioBackend(vlc_module=vlc, platform_name=sys.platform)
+        self.instance = self._backend.instance
+        self.player = self._backend.player
+        self.media = self._backend.media
 
     def load(self, path: str) -> None:
-        if not os.path.isfile(path):
-            raise FileNotFoundError(path)
-        if self.media is not None:
-            try:
-                self.media.release()
-            except Exception:
-                pass
-            self.media = None
-        media = self.instance.media_new(os.path.abspath(path))
-        self.player.set_media(media)
-        self.media = media
+        self._backend.load(path)
+        self.media = self._backend.media
 
     def play(self) -> None:
-        rc = int(self.player.play())
-        if rc == -1:
-            raise RuntimeError("VLC failed to start playback.")
+        self._backend.play()
 
     def pause_toggle(self) -> None:
-        self.player.pause()
+        self._backend.pause_toggle()
 
     def set_pause(self, on: bool) -> None:
-        self.player.set_pause(1 if on else 0)
+        self._backend.set_pause(on)
 
     def stop(self) -> None:
-        self.player.stop()
+        self._backend.stop()
 
     def is_playing(self) -> bool:
-        return bool(self.player.is_playing())
+        return self._backend.is_playing()
 
     def set_volume(self, vol_0_100: int) -> None:
-        self.player.audio_set_volume(max(0, min(100, int(vol_0_100))))
+        self._backend.set_volume(vol_0_100)
 
     def get_time_ms(self) -> int:
-        return int(self.player.get_time() or 0)
+        return self._backend.get_time_ms()
 
     def get_length_ms(self) -> int:
-        return int(self.player.get_length() or 0)
+        return self._backend.get_length_ms()
 
     def set_time_ms(self, ms: int) -> None:
-        self.player.set_time(int(ms))
+        self._backend.set_time_ms(ms)
 
     def get_state(self):
-        return self.player.get_state()
+        return self._backend.get_state()
 
     def release(self) -> None:
-        try:
-            self.player.stop()
-        except Exception:
-            pass
-        if self.media is not None:
-            try:
-                self.media.release()
-            except Exception:
-                pass
-            self.media = None
-        try:
-            self.player.release()
-        except Exception:
-            pass
-        try:
-            self.instance.release()
-        except Exception:
-            pass
+        self._backend.release()
+        self.media = self._backend.media
 
 
 class TkinterDesktopApp(DesktopApp):
     """Tkinter implementation of the Kokoro desktop UI."""
+
+    _AUDIO_STATE_FIELD_MAP: dict[str, str] = {
+        "audio_player_loaded_path": "loaded_path",
+        "audio_player_pcm_data": "pcm_data",
+        "audio_player_sample_rate": "sample_rate",
+        "audio_player_total_frames": "total_frames",
+        "audio_player_current_frame": "current_frame",
+        "audio_player_media_length_ms": "media_length_ms",
+        "audio_player_backend": "backend",
+        "audio_player_sd_start_frame": "sd_start_frame",
+        "audio_player_sd_started_at": "sd_started_at",
+        "audio_player_is_playing": "is_playing",
+        "audio_player_is_paused": "is_paused",
+        "audio_player_tick_job": "tick_job",
+        "audio_player_seek_dragging": "seek_dragging",
+        "audio_player_seek_programmatic": "seek_programmatic",
+        "audio_player_queue_index": "queue_index",
+        "audio_player_waveform": "waveform",
+        "audio_player_state_path": "state_path",
+        "audio_player_restore_path": "restore_path",
+        "audio_player_restore_position_seconds": "restore_position_seconds",
+        "audio_player_shortcuts_bound": "shortcuts_bound",
+        "audio_player_seek_step_seconds": "seek_step_seconds",
+    }
 
     def __init__(
         self,
@@ -152,18 +156,12 @@ class TkinterDesktopApp(DesktopApp):
         predict,
         export_morphology_sheet=None,
         morphology_db_view=None,
-        morphology_db_add=None,
-        morphology_db_update=None,
-        morphology_db_delete=None,
         load_pronunciation_rules=None,
         apply_pronunciation_rules=None,
         import_pronunciation_rules=None,
         export_pronunciation_rules=None,
-        build_lesson_for_tts=None,
         set_tts_only_mode=None,
-        set_llm_only_mode=None,
         tts_only_mode_default: bool = False,
-        llm_only_mode_default: bool = False,
         history_service=None,
         choices: Mapping[str, str] | None = None,
     ) -> None:
@@ -178,16 +176,11 @@ class TkinterDesktopApp(DesktopApp):
         self.predict = predict
         self.export_morphology_sheet = export_morphology_sheet
         self.morphology_db_view = morphology_db_view
-        self.morphology_db_add = morphology_db_add
-        self.morphology_db_update = morphology_db_update
-        self.morphology_db_delete = morphology_db_delete
         self.load_pronunciation_rules = load_pronunciation_rules
         self.apply_pronunciation_rules = apply_pronunciation_rules
         self.import_pronunciation_rules = import_pronunciation_rules
         self.export_pronunciation_rules = export_pronunciation_rules
-        self.build_lesson_for_tts = build_lesson_for_tts
         self.set_tts_only_mode = set_tts_only_mode
-        self.set_llm_only_mode = set_llm_only_mode
         self.history_service = history_service
         self.export_supports_format = bool(
             callable(export_morphology_sheet) and supports_export_format_arg(export_morphology_sheet)
@@ -209,14 +202,12 @@ class TkinterDesktopApp(DesktopApp):
         }
 
         self.runtime_tts_only_enabled = bool(tts_only_mode_default)
-        self.runtime_llm_only_enabled = bool(llm_only_mode_default)
-        if not self.runtime_tts_only_enabled and not self.runtime_llm_only_enabled:
+        if not self.runtime_tts_only_enabled:
             self.runtime_mode_value = RUNTIME_MODE_DEFAULT
             self.runtime_tts_only_enabled = True
         else:
             self.runtime_mode_value = runtime_mode_from_flags(
                 tts_only_enabled=self.runtime_tts_only_enabled,
-                llm_only_enabled=self.runtime_llm_only_enabled,
             )
 
         self.root: tk.Tk | None = None
@@ -226,31 +217,12 @@ class TkinterDesktopApp(DesktopApp):
         self.generate_detail_tabs: dict[str, ttk.Frame] = {}
         self.history_state: list[str] = []
         self.morph_headers: list[str] = []
-        self.morph_delete_armed = ""
         self.stream_stop_event = threading.Event()
         self.stream_thread: threading.Thread | None = None
         self.accordion_setters: dict[str, Callable[[bool], None]] = {}
-        self.audio_player_loaded_path: Path | None = None
-        self.audio_player_pcm_data: np.ndarray | None = None
-        self.audio_player_sample_rate = 0
-        self.audio_player_total_frames = 0
-        self.audio_player_current_frame = 0
-        self.audio_player_media_length_ms = 0
-        self.audio_player_backend = "vlc"
-        self.audio_player_sd_start_frame = 0
-        self.audio_player_sd_started_at = 0.0
-        self.audio_player_is_playing = False
-        self.audio_player_is_paused = False
-        self.audio_player_tick_job: str | None = None
-        self.audio_player_seek_dragging = False
-        self.audio_player_seek_programmatic = False
-        self.audio_player_queue_index: int | None = None
-        self.audio_player_waveform: np.ndarray | None = None
-        self.audio_player_state_path = Path(self.config.output_dir) / ".audio_player_state.json"
-        self.audio_player_restore_path: Path | None = None
-        self.audio_player_restore_position_seconds = 0.0
-        self.audio_player_shortcuts_bound = False
-        self.audio_player_seek_step_seconds = 5.0
+        self.audio_player_state = AudioPlayerRuntimeState(
+            state_path=Path(self.config.output_dir) / ".audio_player_state.json",
+        )
         self.vlc_audio: VlcAudioBackend | None = None
         self.generate_in_progress = False
         self.generate_started_at = 0.0
@@ -281,9 +253,7 @@ class TkinterDesktopApp(DesktopApp):
         self.stream_status_var: tk.StringVar | None = None
         self.pronunciation_status_var: tk.StringVar | None = None
         self.export_status_var: tk.StringVar | None = None
-        self.lesson_status_var: tk.StringVar | None = None
         self.morph_status_var: tk.StringVar | None = None
-        self.selected_morph_row_var: tk.StringVar | None = None
         self.morph_preview_status_var: tk.StringVar | None = None
         self.audio_player_status_var: tk.StringVar | None = None
         self.audio_player_track_var: tk.StringVar | None = None
@@ -303,23 +273,12 @@ class TkinterDesktopApp(DesktopApp):
         self.export_path_var: tk.StringVar | None = None
         self.export_dataset_var: tk.StringVar | None = None
         self.export_format_var: tk.StringVar | None = None
-        self.lesson_raw_text: tk.Text | None = None
-        self.lesson_output_text: tk.Text | None = None
-        self.llm_base_url_var: tk.StringVar | None = None
-        self.llm_api_key_var: tk.StringVar | None = None
-        self.llm_model_var: tk.StringVar | None = None
-        self.llm_temperature_var: tk.DoubleVar | None = None
-        self.llm_max_tokens_var: tk.IntVar | None = None
-        self.llm_timeout_seconds_var: tk.IntVar | None = None
-        self.llm_extra_instructions_text: tk.Text | None = None
         self.morph_dataset_var: tk.StringVar | None = None
         self.morph_limit_var: tk.IntVar | None = None
         self.morph_offset_var: tk.IntVar | None = None
         self.morph_tree: ttk.Treeview | None = None
         self.morph_preview_tree: ttk.Treeview | None = None
         self.morph_preview_headers: list[str] = []
-        self.morph_add_json_text: tk.Text | None = None
-        self.morph_update_json_text: tk.Text | None = None
         self.left_canvas: tk.Canvas | None = None
         self.left_scroll: ttk.Scrollbar | None = None
         self.left_content: ttk.Frame | None = None
@@ -339,6 +298,12 @@ class TkinterDesktopApp(DesktopApp):
         self.generate_btn: ttk.Button | None = None
         self.hardware_section_frame: ttk.Frame | None = None
         self.hardware_combo_widget: ttk.Combobox | None = None
+
+        self._generate_tab_feature = GenerateTabFeature(self)
+        self._stream_tab_feature = StreamTabFeature(self)
+        self._morphology_tab_feature = MorphologyTabFeature(self)
+        self._audio_player_feature = AudioPlayerFeature(self)
+        self._sync_audio_player_feature_runtime()
 
     def launch(self) -> None:
         self._ensure_root()
@@ -876,9 +841,7 @@ class TkinterDesktopApp(DesktopApp):
         self.stream_status_var = tk.StringVar(master=self.root, value="Ready.")
         self.pronunciation_status_var = tk.StringVar(master=self.root, value="")
         self.export_status_var = tk.StringVar(master=self.root, value="")
-        self.lesson_status_var = tk.StringVar(master=self.root, value="")
         self.morph_status_var = tk.StringVar(master=self.root, value="")
-        self.selected_morph_row_var = tk.StringVar(master=self.root, value="")
         self.morph_preview_status_var = tk.StringVar(
             master=self.root,
             value="Rows: 0 | Unique: 0 | Last updated: -",
@@ -893,15 +856,6 @@ class TkinterDesktopApp(DesktopApp):
         self.export_path_var = tk.StringVar(master=self.root, value="")
         self.export_dataset_var = tk.StringVar(master=self.root, value="lexemes")
         self.export_format_var = tk.StringVar(master=self.root, value="ods")
-        self.llm_base_url_var = tk.StringVar(master=self.root, value=self.config.lm_studio_base_url)
-        self.llm_api_key_var = tk.StringVar(master=self.root, value=self.config.lm_studio_api_key)
-        self.llm_model_var = tk.StringVar(master=self.root, value=self.config.lm_studio_model)
-        self.llm_temperature_var = tk.DoubleVar(master=self.root, value=self.config.lm_studio_temperature)
-        self.llm_max_tokens_var = tk.IntVar(master=self.root, value=self.config.lm_studio_max_tokens)
-        self.llm_timeout_seconds_var = tk.IntVar(
-            master=self.root,
-            value=self.config.lm_studio_timeout_seconds,
-        )
         self.morph_dataset_var = tk.StringVar(master=self.root, value="occurrences")
         self.morph_limit_var = tk.IntVar(master=self.root, value=100)
         self.morph_offset_var = tk.IntVar(master=self.root, value=0)
@@ -1482,7 +1436,7 @@ class TkinterDesktopApp(DesktopApp):
             highlightbackground=focus,
             highlightcolor=focus,
             selectbackground=select,
-            selectforeground="#ffffff",
+            selectforeground=surface,
         )
 
     def _create_scrollbar(self, parent: tk.Widget, *, orient: str, command) -> ttk.Scrollbar:
@@ -1529,7 +1483,7 @@ class TkinterDesktopApp(DesktopApp):
             highlightbackground=focus,
             highlightcolor=focus,
             selectbackground=select,
-            selectforeground="#ffffff",
+            selectforeground=surface,
             activestyle="none",
         )
 
@@ -1550,371 +1504,21 @@ class TkinterDesktopApp(DesktopApp):
 
         generate_tab = ttk.Frame(self.notebook)
         stream_tab = ttk.Frame(self.notebook)
-        lesson_tab = ttk.Frame(self.notebook)
         morph_tab = ttk.Frame(self.notebook)
         self.tabs = {
             "generate": (generate_tab, "Generate"),
             "stream": (stream_tab, "Stream"),
-            "lesson": (lesson_tab, "Lesson Builder (LLM)"),
             "morph": (morph_tab, "Morphology DB"),
         }
         self.notebook.add(generate_tab, text="Generate")
         self.notebook.add(stream_tab, text="Stream")
-        self.notebook.add(lesson_tab, text="Lesson Builder (LLM)")
         self.notebook.add(morph_tab, text="Morphology DB")
 
         self._build_generate_tab(generate_tab)
         self._build_stream_tab(stream_tab)
-        self._build_lesson_tab(lesson_tab)
         self._build_morph_tab(morph_tab)
-
     def _build_generate_tab(self, parent: ttk.Frame) -> None:
-        assert self.generate_status_var is not None
-        assert self.export_dataset_var is not None
-        assert self.export_format_var is not None
-        assert self.export_status_var is not None
-        assert self.export_path_var is not None
-        assert self.audio_player_status_var is not None
-        assert self.audio_player_track_var is not None
-        assert self.audio_player_progress_var is not None
-        assert self.audio_player_time_var is not None
-        assert self.audio_player_volume_var is not None
-        assert self.audio_player_auto_next_var is not None
-        parent.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(1, weight=1)
-
-        top = ttk.Frame(parent, padding=8)
-        top.grid(row=0, column=0, sticky="ew")
-        top.grid_columnconfigure(1, weight=1)
-        self.generate_btn = ttk.Button(
-            top,
-            text="Generate",
-            style="Primary.TButton",
-            command=self._on_generate,
-        )
-        self.generate_btn.grid(row=0, column=0, sticky="w", padx=(0, 10))
-        ttk.Label(top, textvariable=self.generate_status_var, style="CardMuted.TLabel").grid(
-            row=0,
-            column=1,
-            sticky="w",
-        )
-
-        details_notebook = ttk.Notebook(parent, style="App.TNotebook")
-        details_notebook.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
-        player_tab = ttk.Frame(details_notebook, style="Card.TFrame")
-        history_tab = ttk.Frame(details_notebook, style="Card.TFrame")
-        tokens_tab = ttk.Frame(details_notebook, style="Card.TFrame")
-        morphology_tab = ttk.Frame(details_notebook, style="Card.TFrame")
-        faq_tab = ttk.Frame(details_notebook, style="Card.TFrame")
-        self.generate_detail_notebook = details_notebook
-        self.generate_detail_tabs = {
-            "player": player_tab,
-            "history": history_tab,
-            "tokens": tokens_tab,
-            "morphology": morphology_tab,
-            "faq": faq_tab,
-        }
-        details_notebook.add(player_tab, text="Player")
-        details_notebook.add(history_tab, text="History")
-        details_notebook.add(tokens_tab, text="Tokens")
-        details_notebook.add(morphology_tab, text="Morphology")
-        details_notebook.add(faq_tab, text="FAQ")
-
-        player_tab.grid_columnconfigure(0, weight=1)
-        player_shell = ttk.Frame(player_tab, style="PlayerShell.TFrame", padding=(8, 8))
-        player_shell.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 8))
-        player_shell.grid_columnconfigure(0, weight=1)
-        for fixed_row in (0, 1, 2, 3, 4, 5, 6, 7):
-            player_shell.grid_rowconfigure(fixed_row, weight=0)
-
-        mode_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
-        mode_row.grid(row=0, column=0, sticky="ew", padx=8, pady=(2, 4))
-        mode_row.grid_columnconfigure(0, weight=1)
-        ttk.Checkbutton(
-            mode_row,
-            text="Minimal",
-            variable=self.audio_player_minimal_var,
-            style="Player.TCheckbutton",
-            command=self._on_audio_player_minimal_toggle,
-        ).grid(row=0, column=1, sticky="e", padx=8, pady=6)
-
-        track_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
-        track_row.grid(row=1, column=0, sticky="ew", padx=8, pady=6)
-        track_row.grid_columnconfigure(0, weight=1)
-        ttk.Label(
-            track_row,
-            textvariable=self.audio_player_track_var,
-            style="PlayerTitle.TLabel",
-            anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=8, pady=6)
-        self.audio_player_track_frame = track_row
-
-        waveform_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
-        waveform_row.grid(row=2, column=0, sticky="ew", padx=8, pady=6)
-        waveform_row.grid_columnconfigure(0, weight=1)
-        self.audio_player_waveform_canvas = tk.Canvas(
-            waveform_row,
-            height=100,
-            background=getattr(self, "ui_surface", "#031003"),
-            borderwidth=0,
-            highlightthickness=0,
-            relief="flat",
-        )
-        self.audio_player_waveform_canvas.grid(row=0, column=0, sticky="ew")
-        self.audio_player_waveform_canvas.bind("<Configure>", lambda _e: self._audio_player_redraw_waveform())
-        self.audio_player_waveform_canvas.bind("<Button-1>", self._on_audio_player_waveform_seek)
-        self.audio_player_waveform_frame = waveform_row
-
-        timeline_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
-        timeline_row.grid(row=3, column=0, sticky="ew", padx=8, pady=6)
-        timeline_row.grid_columnconfigure(0, weight=1)
-        timeline_row.grid_columnconfigure(1, weight=0)
-        self.audio_player_seek_scale = ttk.Scale(
-            timeline_row,
-            from_=0.0,
-            to=1.0,
-            variable=self.audio_player_progress_var,
-            command=self._on_audio_player_seek_change,
-        )
-        self.audio_player_seek_scale.grid(row=0, column=0, sticky="ew", padx=8, pady=6)
-        self.audio_player_seek_scale.bind("<ButtonPress-1>", self._on_audio_player_seek_press)
-        self.audio_player_seek_scale.bind("<ButtonRelease-1>", self._on_audio_player_seek_release)
-        ttk.Label(
-            timeline_row,
-            textvariable=self.audio_player_time_var,
-            style="PlayerTime.TLabel",
-            anchor="e",
-        ).grid(row=0, column=1, sticky="ew", padx=8, pady=6)
-        self.audio_player_seek_frame = timeline_row
-
-        controls_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
-        controls_row.grid(row=4, column=0, sticky="ew", padx=8, pady=6)
-        controls_row.grid_columnconfigure(0, weight=1)
-        self.audio_player_controls_frame = controls_row
-
-        controls_main = ttk.Frame(controls_row, style="PlayerShell.TFrame")
-        controls_main.grid(row=0, column=0, sticky="ew")
-        controls_main.grid_columnconfigure(0, weight=1)
-        controls_main.grid_columnconfigure(4, weight=1)
-        self.audio_player_play_btn = ttk.Button(
-            controls_main,
-            text="▶",
-            style="TransportPrimary.TButton",
-            command=self._on_audio_player_play,
-        )
-        self.audio_player_play_btn.grid(row=0, column=1, padx=8, pady=6)
-        self.audio_player_pause_btn = ttk.Button(
-            controls_main,
-            text="▌▌",
-            style="Transport.TButton",
-            command=self._on_audio_player_pause,
-        )
-        self.audio_player_pause_btn.grid(row=0, column=2, padx=8, pady=6)
-        self.audio_player_stop_btn = ttk.Button(
-            controls_main,
-            text="■",
-            style="Transport.TButton",
-            command=self._on_audio_player_stop,
-        )
-        self.audio_player_stop_btn.grid(row=0, column=3, padx=8, pady=6)
-
-        controls_seek = ttk.Frame(controls_row, style="PlayerShell.TFrame")
-        controls_seek.grid(row=1, column=0, sticky="ew")
-        controls_seek.grid_columnconfigure(0, weight=1)
-        controls_seek.grid_columnconfigure(3, weight=1)
-        ttk.Button(
-            controls_seek,
-            text="-5s",
-            style="Small.TButton",
-            command=self._on_audio_player_seek_back,
-        ).grid(row=0, column=1, padx=8, pady=6)
-        ttk.Button(
-            controls_seek,
-            text="+5s",
-            style="Small.TButton",
-            command=self._on_audio_player_seek_forward,
-        ).grid(row=0, column=2, padx=8, pady=6)
-
-        volume_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
-        volume_row.grid(row=5, column=0, sticky="ew", padx=8, pady=6)
-        volume_row.grid_columnconfigure(0, weight=1)
-        volume_row.grid_columnconfigure(2, weight=1)
-        self.audio_player_volume_frame = volume_row
-
-        volume_group = ttk.Frame(volume_row, style="PlayerShell.TFrame")
-        volume_group.grid(row=0, column=1, padx=8, pady=6)
-        ttk.Label(volume_group, text="Volume", style="PlayerMeta.TLabel").grid(
-            row=0,
-            column=0,
-            padx=8,
-            pady=6,
-        )
-        ttk.Scale(
-            volume_group,
-            from_=0.0,
-            to=1.5,
-            variable=self.audio_player_volume_var,
-            command=lambda _value: self._on_audio_player_volume_scale(),
-        ).grid(
-            row=0,
-            column=1,
-            padx=8,
-            pady=6,
-        )
-        self.audio_player_volume_value_label = ttk.Label(
-            volume_group,
-            text="100%",
-            style="PlayerTime.TLabel",
-            width=5,
-            anchor="e",
-        )
-        self.audio_player_volume_value_label.grid(row=0, column=2, padx=8, pady=6)
-
-        auto_next_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
-        auto_next_row.grid(row=6, column=0, sticky="ew", padx=8, pady=6)
-        auto_next_row.grid_columnconfigure(0, weight=1)
-        ttk.Checkbutton(
-            auto_next_row,
-            text="Auto-next",
-            variable=self.audio_player_auto_next_var,
-            style="Player.TCheckbutton",
-            command=self._save_audio_player_state,
-        ).grid(row=0, column=1, sticky="e", padx=8, pady=6)
-        self.audio_player_autonext_frame = auto_next_row
-
-        status_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
-        status_row.grid(row=7, column=0, sticky="ew", padx=8, pady=(6, 2))
-        status_row.grid_columnconfigure(0, weight=1)
-        ttk.Label(
-            status_row,
-            textvariable=self.audio_player_status_var,
-            style="PlayerStatus.TLabel",
-            justify="left",
-            anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=8, pady=6)
-        self.audio_player_status_frame = status_row
-        self._sync_audio_player_control_labels()
-        self._update_audio_player_buttons()
-        self._apply_audio_player_minimal_mode()
-
-        history_tab.grid_columnconfigure(0, weight=1)
-        history_tab.grid_rowconfigure(1, weight=1)
-        history_actions = ttk.Frame(history_tab, style="Card.TFrame")
-        history_actions.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
-        ttk.Button(history_actions, text="Clear history", style="Primary.TButton", command=self._on_clear_history).grid(
-            row=0,
-            column=0,
-            sticky="w",
-        )
-        self.history_listbox = tk.Listbox(
-            history_tab,
-            height=6,
-            exportselection=False,
-            font=("Courier New", 10),
-            relief="flat",
-            borderwidth=1,
-        )
-        self._style_listbox(self.history_listbox)
-        self.history_listbox.grid(row=1, column=0, sticky="nsew", padx=8, pady=(6, 8))
-        self.history_listbox.bind("<<ListboxSelect>>", lambda _e: self._on_history_select_autoplay())
-        self.history_listbox.bind("<Double-Button-1>", self._on_history_double_click)
-
-        tokens_tab.grid_columnconfigure(0, weight=1)
-        tokens_tab.grid_rowconfigure(1, weight=1)
-        token_actions = ttk.Frame(tokens_tab, style="Card.TFrame")
-        token_actions.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
-        ttk.Button(token_actions, text="Tokenize", style="Primary.TButton", command=self._on_tokenize).grid(
-            row=0,
-            column=0,
-            sticky="w",
-        )
-        token_text_wrap, self.token_output_text = self._create_text_with_scrollbar(
-            tokens_tab,
-            wrap=tk.WORD,
-            height=7,
-            font=("Courier New", 10),
-        )
-        token_text_wrap.grid(row=1, column=0, sticky="nsew", padx=8, pady=(6, 8))
-
-        assert self.morph_preview_status_var is not None
-        morphology_tab.grid_columnconfigure(0, weight=1)
-        morphology_tab.grid_rowconfigure(0, weight=0)
-        morphology_tab.grid_rowconfigure(1, weight=1)
-        morphology_tab.grid_rowconfigure(2, weight=0)
-
-        toolbar = ttk.Frame(morphology_tab, style="Card.TFrame")
-        toolbar.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
-        toolbar.grid_columnconfigure(0, weight=0)
-        toolbar.grid_columnconfigure(1, weight=0)
-        toolbar.grid_columnconfigure(2, weight=0)
-        toolbar.grid_columnconfigure(3, weight=0)
-        toolbar.grid_columnconfigure(4, weight=1)
-        toolbar.grid_columnconfigure(5, weight=0)
-        ttk.Label(toolbar, text="Dataset", style="Card.TLabel").grid(
-            row=0,
-            column=0,
-            sticky="w",
-            padx=(0, 6),
-            pady=(0, 0),
-        )
-        dataset_combo = ttk.Combobox(
-            toolbar,
-            textvariable=self.export_dataset_var,
-            state="readonly",
-            values=["lexemes", "occurrences", "expressions", "reviews", "pos_table"],
-        )
-        dataset_combo.grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=(0, 0))
-        dataset_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_morphology_preview_dataset_change())
-        ttk.Label(toolbar, text="Format", style="Card.TLabel").grid(
-            row=0,
-            column=2,
-            sticky="w",
-            padx=(0, 6),
-            pady=(0, 0),
-        )
-        ttk.Combobox(
-            toolbar,
-            textvariable=self.export_format_var,
-            state="readonly",
-            values=["ods", "csv", "txt", "xlsx"],
-        ).grid(row=0, column=3, sticky="ew", padx=(0, 12), pady=(0, 0))
-        export_btn = ttk.Button(toolbar, text="Export file", style="Primary.TButton", command=self._on_export_morphology)
-        export_btn.grid(row=0, column=5, sticky="e", pady=(0, 0))
-        if not (self.config.morph_db_enabled and callable(self.export_morphology_sheet)):
-            export_btn.state(["disabled"])
-
-        table_wrap = ttk.Frame(morphology_tab, style="Card.TFrame")
-        table_wrap.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 4))
-        table_wrap.grid_columnconfigure(0, weight=1)
-        table_wrap.grid_rowconfigure(0, weight=1)
-        self.morph_preview_tree = ttk.Treeview(
-            table_wrap,
-            show="headings",
-            style="Treeview",
-            selectmode="none",
-        )
-        preview_scroll = self._create_scrollbar(table_wrap, orient=tk.VERTICAL, command=self.morph_preview_tree.yview)
-        self.morph_preview_tree.configure(yscrollcommand=preview_scroll.set)
-        self.morph_preview_tree.grid(row=0, column=0, sticky="nsew")
-        preview_scroll.grid(row=0, column=1, sticky="ns")
-
-        ttk.Label(
-            morphology_tab,
-            textvariable=self.morph_preview_status_var,
-            style="CardMuted.TLabel",
-            anchor="w",
-        ).grid(
-            row=2,
-            column=0,
-            sticky="ew",
-            padx=8,
-            pady=(0, 8),
-        )
-
-        self._set_morphology_preview_table(["No data"], [["No data"]], rows_count=0, unique_count=0)
-        self._on_morphology_preview_dataset_change()
-
-        self._build_faq_tab(faq_tab)
+        self._generate_tab_feature.build_tab(parent)
 
     def _build_faq_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1)
@@ -2072,243 +1676,10 @@ class TkinterDesktopApp(DesktopApp):
             ("code",),
         )
         widget.configure(state=tk.DISABLED)
-
     def _build_stream_tab(self, parent: ttk.Frame) -> None:
-        assert self.stream_status_var is not None
-        frame = ttk.Frame(parent, padding=8)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(frame, textvariable=self.stream_status_var, wraplength=760).pack(anchor="w")
-        btn_row = ttk.Frame(frame)
-        btn_row.pack(fill="x", pady=(8, 8))
-        self.stream_btn = ttk.Button(btn_row, text="Stream", style="Primary.TButton", command=self._on_stream_start)
-        self.stop_stream_btn = ttk.Button(btn_row, text="Stop", command=self._on_stream_stop)
-        self.stream_btn.pack(side="left")
-        self.stop_stream_btn.pack(side="left", padx=(8, 0))
-        self.stop_stream_btn.state(["disabled"])
-        ttk.Label(
-            frame,
-            text="Desktop stream runs in worker threads with Stop support.",
-            wraplength=760,
-            justify="left",
-        ).pack(anchor="w")
-
-    def _build_lesson_tab(self, parent: ttk.Frame) -> None:
-        assert self.llm_base_url_var is not None
-        assert self.llm_api_key_var is not None
-        assert self.llm_model_var is not None
-        assert self.llm_temperature_var is not None
-        assert self.llm_max_tokens_var is not None
-        assert self.llm_timeout_seconds_var is not None
-        assert self.lesson_status_var is not None
-        frame = ttk.Frame(parent, padding=8)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(
-            frame,
-            text=(
-                "Transform raw material into an English lesson script with detailed "
-                "exercise explanations for TTS narration."
-            ),
-            wraplength=760,
-            justify="left",
-        ).pack(anchor="w")
-        lesson_raw_wrap, self.lesson_raw_text = self._create_text_with_scrollbar(
-            frame,
-            wrap=tk.WORD,
-            height=10,
-            font=("Courier New", 10),
-        )
-        lesson_raw_wrap.pack(fill="x", pady=(8, 8))
-
-        settings = self._create_accordion_section(
-            frame,
-            title="LM Studio settings",
-            expanded=False,
-        )
-        self._add_labeled_widget(
-            settings,
-            "Base URL",
-            lambda row: ttk.Entry(row, textvariable=self.llm_base_url_var, width=50),
-        )
-        self._add_labeled_widget(
-            settings,
-            "Model",
-            lambda row: ttk.Entry(row, textvariable=self.llm_model_var, width=50),
-        )
-        self._add_labeled_widget(
-            settings,
-            "API key",
-            lambda row: ttk.Entry(row, textvariable=self.llm_api_key_var, width=50, show="*"),
-        )
-        self._add_labeled_widget(
-            settings,
-            "Temperature",
-            lambda row: ttk.Spinbox(
-                row,
-                from_=0.0,
-                to=2.0,
-                increment=0.05,
-                textvariable=self.llm_temperature_var,
-                width=12,
-            ),
-        )
-        self._add_labeled_widget(
-            settings,
-            "Max tokens",
-            lambda row: ttk.Spinbox(
-                row,
-                from_=64,
-                to=32768,
-                increment=64,
-                textvariable=self.llm_max_tokens_var,
-                width=12,
-            ),
-        )
-        self._add_labeled_widget(
-            settings,
-            "Timeout (s)",
-            lambda row: ttk.Spinbox(
-                row,
-                from_=0,
-                to=86400,
-                increment=5,
-                textvariable=self.llm_timeout_seconds_var,
-                width=12,
-            ),
-        )
-        ttk.Label(settings, text="Extra instructions").pack(anchor="w", padx=8, pady=(0, 2))
-        extra_wrap, self.llm_extra_instructions_text = self._create_text_with_scrollbar(
-            settings,
-            wrap=tk.WORD,
-            height=4,
-            font=("Courier New", 10),
-        )
-        extra_wrap.pack(fill="x", padx=8, pady=(0, 8))
-
-        btn_row = ttk.Frame(frame)
-        btn_row.pack(fill="x", pady=(0, 8))
-        ttk.Button(btn_row, text="Generate lesson", style="Primary.TButton", command=self._on_lesson_generate).pack(
-            side="left"
-        )
-        ttk.Button(btn_row, text="Use lesson as TTS input", command=self._on_lesson_copy_to_input).pack(
-            side="left",
-            padx=(8, 0),
-        )
-        lesson_output_wrap, self.lesson_output_text = self._create_text_with_scrollbar(
-            frame,
-            wrap=tk.WORD,
-            height=14,
-            font=("Courier New", 10),
-        )
-        lesson_output_wrap.pack(fill="both", expand=True)
-        ttk.Label(frame, textvariable=self.lesson_status_var, wraplength=760).pack(
-            fill="x",
-            pady=(6, 0),
-        )
-
+        self._stream_tab_feature.build_tab(parent)
     def _build_morph_tab(self, parent: ttk.Frame) -> None:
-        assert self.morph_dataset_var is not None
-        assert self.morph_limit_var is not None
-        assert self.morph_offset_var is not None
-        assert self.morph_status_var is not None
-        assert self.selected_morph_row_var is not None
-        frame = ttk.Frame(parent, padding=8)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(
-            frame,
-            text=(
-                "Simple CRUD for morphology.sqlite3: browse rows, add JSON row, "
-                "select a row in the table, then click Update/Delete."
-            ),
-            wraplength=760,
-            justify="left",
-        ).pack(anchor="w")
-
-        controls = ttk.Frame(frame)
-        controls.pack(fill="x", pady=(8, 8))
-        ttk.Label(controls, text="Dataset").pack(side="left")
-        dataset_combo = ttk.Combobox(
-            controls,
-            textvariable=self.morph_dataset_var,
-            state="readonly",
-            values=["occurrences", "lexemes", "expressions", "reviews"],
-            width=16,
-        )
-        dataset_combo.pack(side="left", padx=(8, 12))
-        dataset_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_morph_refresh())
-        ttk.Label(controls, text="Limit").pack(side="left")
-        ttk.Spinbox(
-            controls,
-            from_=1,
-            to=1000,
-            increment=1,
-            textvariable=self.morph_limit_var,
-            width=8,
-        ).pack(side="left", padx=(8, 12))
-        ttk.Label(controls, text="Offset").pack(side="left")
-        ttk.Spinbox(
-            controls,
-            from_=0,
-            to=1000000,
-            increment=1,
-            textvariable=self.morph_offset_var,
-            width=8,
-        ).pack(side="left", padx=(8, 12))
-        ttk.Button(controls, text="Refresh", command=self._on_morph_refresh).pack(side="left")
-
-        table_wrap = ttk.Frame(frame)
-        table_wrap.pack(fill="both", expand=True)
-        self.morph_tree = ttk.Treeview(table_wrap, show="headings", style="Treeview")
-        y_scroll = self._create_scrollbar(table_wrap, orient=tk.VERTICAL, command=self.morph_tree.yview)
-        x_scroll = self._create_scrollbar(table_wrap, orient=tk.HORIZONTAL, command=self.morph_tree.xview)
-        self.morph_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
-        self.morph_tree.grid(row=0, column=0, sticky="nsew")
-        y_scroll.grid(row=0, column=1, sticky="ns")
-        x_scroll.grid(row=1, column=0, sticky="ew")
-        table_wrap.rowconfigure(0, weight=1)
-        table_wrap.columnconfigure(0, weight=1)
-        self.morph_tree.bind("<<TreeviewSelect>>", self._on_morph_select_row)
-
-        ttk.Label(frame, textvariable=self.morph_status_var, wraplength=760).pack(
-            fill="x",
-            pady=(6, 6),
-        )
-        add_box = self._create_accordion_section(frame, title="Add row", expanded=False)
-        morph_add_wrap, self.morph_add_json_text = self._create_text_with_scrollbar(
-            add_box,
-            wrap=tk.WORD,
-            height=5,
-            font=("Courier New", 10),
-        )
-        self.morph_add_json_text.insert("1.0", '{"source":"manual"}')
-        morph_add_wrap.pack(fill="x", padx=8, pady=8)
-        ttk.Button(add_box, text="Add row", style="Primary.TButton", command=self._on_morph_add).pack(
-            anchor="w",
-            padx=8,
-            pady=(0, 8),
-        )
-
-        update_box = self._create_accordion_section(frame, title="Update / Delete row", expanded=False)
-        selected_row = ttk.Frame(update_box)
-        selected_row.pack(fill="x", padx=8, pady=(8, 4))
-        ttk.Label(selected_row, text="Selected row id/key").pack(side="left")
-        ttk.Entry(selected_row, textvariable=self.selected_morph_row_var, state="readonly", width=30).pack(
-            side="left",
-            padx=(8, 0),
-        )
-        morph_update_wrap, self.morph_update_json_text = self._create_text_with_scrollbar(
-            update_box,
-            wrap=tk.WORD,
-            height=5,
-            font=("Courier New", 10),
-        )
-        self.morph_update_json_text.insert("1.0", '{"source":"manual"}')
-        morph_update_wrap.pack(fill="x", padx=8, pady=(0, 8))
-        btn_row = ttk.Frame(update_box)
-        btn_row.pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Button(btn_row, text="Update row", command=self._on_morph_update).pack(side="left")
-        ttk.Button(btn_row, text="Delete row", command=self._on_morph_delete).pack(side="left", padx=(8, 0))
-
-        self._apply_table_update({"headers": ["No data"], "value": [[]]})
+        self._morphology_tab_feature.build_tab(parent)
 
     @staticmethod
     def _add_labeled_widget(
@@ -2454,31 +1825,16 @@ class TkinterDesktopApp(DesktopApp):
         if apply_backend:
             if selected_mode == RUNTIME_MODE_DEFAULT:
                 self._set_tts_only_mode_wrapped(True)
-                self._set_llm_only_mode_wrapped(False)
-            elif selected_mode == RUNTIME_MODE_TTS_MORPH:
-                self._set_tts_only_mode_wrapped(False)
-                self._set_llm_only_mode_wrapped(True)
             else:
                 self._set_tts_only_mode_wrapped(False)
-                self._set_llm_only_mode_wrapped(False)
         self.runtime_mode_status_var.set(runtime_mode_status_text(selected_mode))
         self._sync_runtime_tabs(selected_mode)
         self._sync_hardware_selector_visibility()
 
-    def _llm_runs_on_cpu(self) -> bool:
-        llm_device = str(
-            os.getenv("LM_STUDIO_DEVICE", "") or os.getenv("LLM_DEVICE", "")
-        ).strip().lower()
-        if llm_device in {"gpu", "cuda"}:
-            return False
-        if llm_device:
-            return True
-        return not self.cuda_available
-
     def _sync_hardware_selector_visibility(self) -> None:
         if self.hardware_section_frame is None or self.hardware_var is None:
             return
-        if self._llm_runs_on_cpu():
+        if not self.cuda_available:
             self.hardware_var.set("CPU")
             self.hardware_section_frame.grid_remove()
             return
@@ -2491,27 +1847,10 @@ class TkinterDesktopApp(DesktopApp):
             return str(status or tts_only_mode_status_text(self.runtime_tts_only_enabled))
         return tts_only_mode_status_text(self.runtime_tts_only_enabled)
 
-    def _set_llm_only_mode_wrapped(self, enabled: bool) -> str:
-        self.runtime_llm_only_enabled = bool(enabled)
-        if callable(self.set_llm_only_mode):
-            status = self.set_llm_only_mode(self.runtime_llm_only_enabled)
-            return str(
-                status
-                or llm_only_mode_status_text(
-                    self.runtime_llm_only_enabled,
-                    tts_only_enabled=self.runtime_tts_only_enabled,
-                )
-            )
-        return llm_only_mode_status_text(
-            self.runtime_llm_only_enabled,
-            tts_only_enabled=self.runtime_tts_only_enabled,
-        )
-
     def _sync_runtime_tabs(self, selected_mode: str) -> None:
         if self.notebook is None:
             return
-        lesson_visible, morph_visible = runtime_mode_tab_visibility(selected_mode)
-        self._set_tab_visible("lesson", lesson_visible)
+        morph_visible = runtime_mode_tab_visibility(selected_mode)
         self._set_tab_visible("morph", morph_visible)
 
     def _set_tab_visible(self, tab_key: str, visible: bool) -> None:
@@ -2602,1133 +1941,49 @@ class TkinterDesktopApp(DesktopApp):
             return
         widget.delete("1.0", tk.END)
         widget.insert("1.0", text or "")
-
     def _base_generation_kwargs(self) -> dict[str, Any]:
-        return {
-            "text": self._read_text(self.input_text),
-            "voice": self.voice_var.get(),
-            "mix_enabled": bool(self.mix_enabled_var.get()),
-            "voice_mix": self._selected_mix_voices(),
-            "speed": float(self.speed_var.get()),
-            "use_gpu": self.hardware_var.get() == "GPU",
-            "pause_seconds": float(self.pause_var.get()),
-            "normalize_times_enabled": bool(self.normalize_times_var.get()),
-            "normalize_numbers_enabled": bool(self.normalize_numbers_var.get()),
-            "style_preset": self.style_var.get() or DEFAULT_STYLE_PRESET,
-        }
-
+        return self._generate_tab_feature.base_generation_kwargs()
     def _on_generate(self) -> None:
-        if self.generate_in_progress:
-            return
-        self._set_generate_button_processing(True)
-
-        def work():
-            kwargs = self._base_generation_kwargs()
-            kwargs["output_format"] = self.output_format_var.get()
-            result, tokens = self.generate_first(**kwargs)
-            updated_history = (
-                self.history_service.update_history(self.history_state)
-                if self.history_service is not None
-                else self.history_state
-            )
-            return result, tokens, list(updated_history)
-
-        def on_success(payload: tuple[Any, str, list[str]]) -> None:
-            try:
-                result, tokens, updated_history = payload
-                self.history_state = updated_history
-                self._render_history()
-                self._write_text(self.token_output_text, tokens)
-                if result is None:
-                    self.generate_status_var.set("No audio generated.")
-                    return
-                if self.generate_detail_notebook is not None and self.generate_detail_tabs.get("player") is not None:
-                    self.generate_detail_notebook.select(self.generate_detail_tabs["player"])
-                self.generate_status_var.set("Generation complete. Loading latest audio...")
-                if not self._autoplay_latest_history():
-                    self.generate_status_var.set("Generation complete, but no playable file found in History.")
-            finally:
-                self._set_generate_button_processing(False)
-
-        self._threaded(work, on_success)
-
+        self._generate_tab_feature.on_generate()
     def _on_tokenize(self) -> None:
-        self.generate_status_var.set("Tokenizing...")
-
-        def work():
-            kwargs = self._base_generation_kwargs()
-            kwargs.pop("use_gpu", None)
-            kwargs.pop("pause_seconds", None)
-            return self.tokenize_first(**kwargs)
-
-        def on_success(tokens: str) -> None:
-            self._write_text(self.token_output_text, tokens)
-            self.generate_status_var.set("Tokenization complete.")
-
-        self._threaded(work, on_success)
-
-    def _stop_audio(self, *, preserve_player_position: bool = True) -> None:
-        if self.vlc_audio is not None:
-            try:
-                if preserve_player_position:
-                    if self.audio_player_is_playing:
-                        self.vlc_audio.set_pause(True)
-                else:
-                    self.vlc_audio.stop()
-            except Exception:
-                self.logger.exception("Failed to control VLC player")
-
-        if preserve_player_position:
-            current_seconds = self._audio_player_current_seconds()
-            self.audio_player_current_frame = int(current_seconds * float(max(self.audio_player_sample_rate, 1)))
-        if self.audio_player_is_playing:
-            self.audio_player_is_playing = False
-            self.audio_player_is_paused = bool(preserve_player_position)
-            if not preserve_player_position:
-                self.audio_player_current_frame = 0
-        elif not preserve_player_position:
-            self.audio_player_current_frame = 0
-            self.audio_player_is_paused = False
-        if sd is not None:
-            try:
-                sd.stop()
-            except Exception:
-                self.logger.exception("Failed to stop sounddevice playback")
-        self.audio_player_sd_start_frame = 0
-        self.audio_player_sd_started_at = 0.0
-        self._audio_player_cancel_tick()
-        self._audio_player_update_progress()
-        self._update_audio_player_buttons()
-
-    def _render_history(self) -> None:
-        if self.history_listbox is None:
-            return
-        self.history_listbox.delete(0, tk.END)
-        for path in self.history_state:
-            self.history_listbox.insert(tk.END, path)
-
-    def _on_clear_history(self) -> None:
-        if self.history_service is None:
-            self.history_state = []
-            self.audio_player_queue_index = None
-            self._render_history()
-            self._save_audio_player_state()
-            return
-
-        def work():
-            return self.history_service.clear_history(self.history_state)
-
-        def on_success(updated: list[str]) -> None:
-            self.history_state = list(updated or [])
-            self.audio_player_queue_index = None
-            self._render_history()
-            self.generate_status_var.set("History cleared.")
-            self._save_audio_player_state()
-
-        self._threaded(work, on_success)
-
-    def _on_history_select_autoplay(self) -> None:
-        selected_item = self._selected_history_item(show_errors=False)
-        if selected_item is None:
-            return
-        index, target = selected_item
-        self._load_audio_file_async(target, autoplay=True, history_index=index)
-
-    def _on_history_double_click(self, event: tk.Event[Any]) -> None:
-        if self.history_listbox is None:
-            return
-        try:
-            index = int(self.history_listbox.nearest(event.y))
-        except Exception:
-            index = -1
-        if index < 0 or index >= len(self.history_state):
-            return
-        self._select_history_index(index)
-        selected_item = self._selected_history_item(show_errors=False)
-        if selected_item is None:
-            return
-        history_index, target = selected_item
-        self._open_player_tab(maximize_player=True)
-        self._load_audio_file_async(target, autoplay=True, history_index=history_index)
-
-    def _open_player_tab(self, *, maximize_player: bool) -> None:
-        if self.notebook is not None and "generate" in self.tabs:
-            try:
-                self.notebook.select(self.tabs["generate"][0])
-            except Exception:
-                self.logger.exception("Failed to switch to Generate tab")
-        if self.generate_detail_notebook is not None:
-            player_tab = self.generate_detail_tabs.get("player")
-            if player_tab is not None:
-                try:
-                    self.generate_detail_notebook.select(player_tab)
-                except Exception:
-                    self.logger.exception("Failed to switch to Player tab")
-        if maximize_player and self.audio_player_minimal_var is not None:
-            self.audio_player_minimal_var.set(False)
-            self._apply_audio_player_minimal_mode()
-
-    def _on_audio_player_open(self, *, autoplay: bool = False) -> None:
-        path = filedialog.askopenfilename(
-            title="Choose an audio file",
-            filetypes=[
-                ("Audio files", "*.wav *.mp3 *.ogg *.flac *.m4a *.aac *.opus"),
-                ("All files", "*.*"),
-            ],
-        )
-        if not path:
-            return
-        target = Path(path)
-        history_index = self._find_history_index(target)
-        if history_index is not None:
-            self._select_history_index(history_index)
-        self._load_audio_file_async(target, autoplay=bool(autoplay), history_index=history_index)
-
-    def _autoplay_latest_history(self) -> bool:
-        if not self.history_state:
-            return False
-        for index, value in enumerate(self.history_state):
-            target = Path(value)
-            if not target.is_file():
-                continue
-            self._select_history_index(index)
-            self._load_audio_file_async(target, autoplay=True, history_index=index)
-            return True
-        return False
-
-    def _selected_history_item(self, *, show_errors: bool) -> tuple[int, Path] | None:
-        if self.history_listbox is None:
-            return None
-        selected = self.history_listbox.curselection()
-        if not selected:
-            if show_errors:
-                self.generate_status_var.set("Select a history item first.")
-            return None
-        index = selected[0]
-        if index < 0 or index >= len(self.history_state):
-            if show_errors:
-                self.generate_status_var.set("Selected history item is out of range.")
-            return None
-        target = Path(self.history_state[index])
-        if not target.is_file():
-            if show_errors:
-                self.generate_status_var.set("History file does not exist.")
-            return None
-        return index, target
-
-    def _select_history_index(self, index: int) -> None:
-        if self.history_listbox is None:
-            return
-        try:
-            self.history_listbox.selection_clear(0, tk.END)
-            self.history_listbox.selection_set(index)
-            self.history_listbox.activate(index)
-            self.history_listbox.see(index)
-        except Exception:
-            self.logger.exception("Failed to update history selection")
-
-    def _load_audio_file_async(
-        self,
-        path: Path,
-        *,
-        autoplay: bool,
-        history_index: int | None = None,
-        resume_seconds: float | None = None,
-    ) -> None:
-        assert self.audio_player_status_var is not None
-        self.audio_player_status_var.set(f"Loading {path.name}...")
-
-        def runner() -> None:
-            waveform_audio: np.ndarray | None = None
-            sample_rate = 0
-            total_frames = 0
-            waveform_warning = ""
-            if sf is not None:
-                try:
-                    audio, sr = sf.read(str(path), dtype="float32", always_2d=False)
-                    audio_np = np.asarray(audio, dtype=np.float32)
-                    if audio_np.size > 0:
-                        if audio_np.ndim not in (1, 2):
-                            raise RuntimeError("Unsupported audio shape.")
-                        waveform_audio = audio_np
-                        sample_rate = int(sr)
-                        total_frames = int(audio_np.shape[0])
-                except Exception as exc:
-                    self.logger.exception("Failed to read waveform data")
-                    waveform_warning = str(exc)
-
-            self._run_on_ui(
-                lambda waveform_audio=waveform_audio, sample_rate=sample_rate, total_frames=total_frames, waveform_warning=waveform_warning: self._on_audio_file_loaded(
-                    path=path,
-                    waveform_audio=waveform_audio,
-                    sample_rate=int(sample_rate),
-                    total_frames=total_frames,
-                    autoplay=autoplay,
-                    history_index=history_index,
-                    resume_seconds=resume_seconds,
-                    waveform_warning=waveform_warning,
-                )
-            )
-
-        threading.Thread(target=runner, daemon=True).start()
-
-    def _on_audio_file_loaded(
-        self,
-        *,
-        path: Path,
-        waveform_audio: np.ndarray | None,
-        sample_rate: int,
-        total_frames: int,
-        autoplay: bool,
-        history_index: int | None = None,
-        resume_seconds: float | None = None,
-        waveform_warning: str = "",
-    ) -> None:
-        assert self.audio_player_status_var is not None
-        assert self.audio_player_track_var is not None
-        self._stop_audio(preserve_player_position=False)
-        self.audio_player_loaded_path = path
-        self.audio_player_track_var.set(path.name)
-        if waveform_audio is not None and sample_rate > 0 and total_frames > 0:
-            self.audio_player_pcm_data = np.asarray(waveform_audio, dtype=np.float32)
-            self.audio_player_sample_rate = int(sample_rate)
-            self.audio_player_total_frames = int(total_frames)
-            self._audio_player_rebuild_waveform(waveform_audio)
-        else:
-            self.audio_player_pcm_data = None
-            self.audio_player_sample_rate = 1000
-            self.audio_player_total_frames = 0
-            self.audio_player_waveform = None
-            self._audio_player_redraw_waveform()
-        self.audio_player_queue_index = history_index if history_index is not None else self._find_history_index(path)
-        if self.audio_player_queue_index is not None:
-            self._select_history_index(self.audio_player_queue_index)
-        self.audio_player_media_length_ms = 0
-        self.audio_player_backend = "vlc"
-        self.audio_player_current_frame = 0
-        restore_seconds = self._coerce_float(
-            resume_seconds if resume_seconds is not None else 0.0,
-            default=0.0,
-            min_value=0.0,
-        )
-        self.audio_player_is_playing = False
-        self.audio_player_is_paused = restore_seconds > 0
-        media_ready = False
-        if vlc is not None:
-            media_ready = self._audio_player_set_media(path)
-        if not media_ready and not self._audio_player_can_use_sounddevice():
-            self.audio_player_status_var.set(
-                "No playback backend available. Install VLC runtime or keep soundfile/sounddevice enabled."
-            )
-            self._audio_player_update_progress()
-            self._update_audio_player_buttons()
-            self._save_audio_player_state()
-            return
-        if not media_ready:
-            self.audio_player_backend = "sounddevice"
-        total_seconds = self._audio_player_total_seconds(refresh=True)
-        if total_seconds > 0:
-            if self.audio_player_waveform is None:
-                self.audio_player_sample_rate = 1000
-                self.audio_player_total_frames = int(total_seconds * 1000.0)
-            restore_seconds = min(restore_seconds, total_seconds)
-        self.audio_player_current_frame = int(restore_seconds * float(max(self.audio_player_sample_rate, 1)))
-        if self.audio_player_total_frames > 0:
-            self.audio_player_current_frame = max(0, min(self.audio_player_total_frames, self.audio_player_current_frame))
-        self._audio_player_update_progress()
-        duration_s = self._audio_player_total_seconds()
-        resume_text = ""
-        if self.audio_player_current_frame > 0 and not autoplay:
-            position_text = self._audio_player_format_timestamp(restore_seconds)
-            resume_text = f", resume {position_text}"
-        status = f"Loaded {path.name} ({duration_s:.1f}s{resume_text})."
-        if waveform_warning:
-            status = f"{status} Waveform unavailable."
-        self.audio_player_status_var.set(status)
-        self.generate_status_var.set(f"Audio file loaded: {path.name}")
-        self._update_audio_player_buttons()
-        self._save_audio_player_state()
-        if autoplay:
-            self._on_audio_player_play()
-
-    def _ensure_vlc_player(self) -> bool:
-        assert self.audio_player_status_var is not None
-        if vlc is None:
-            self.audio_player_status_var.set("python-vlc is not installed. Install dependencies to enable Audio player.")
-            return False
-        if self.vlc_audio is None:
-            try:
-                self.vlc_audio = VlcAudioBackend()
-            except Exception as exc:
-                self.logger.exception("Failed to create VLC backend")
-                self.audio_player_status_var.set(f"VLC init failed: {exc}")
-                return False
-        return True
-
-    def _audio_player_release_vlc(self) -> None:
-        if self.vlc_audio is not None:
-            try:
-                self.vlc_audio.release()
-            except Exception:
-                self.logger.exception("Failed to release VLC backend")
-            self.vlc_audio = None
-
-    def _audio_player_set_media(self, path: Path) -> bool:
-        assert self.audio_player_status_var is not None
-        assert self.audio_player_volume_var is not None
-        if not self._ensure_vlc_player():
-            return False
-        try:
-            assert self.vlc_audio is not None
-            self.vlc_audio.load(str(path))
-            volume = self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5)
-            self.vlc_audio.set_volume(int(round(volume * 100.0)))
-            self.audio_player_media_length_ms = 0
-        except Exception as exc:
-            self.logger.exception("Failed to set VLC media")
-            self.audio_player_status_var.set(f"VLC media error: {exc}")
-            return False
-        return True
-
-    def _on_audio_player_play(self) -> None:
-        assert self.audio_player_status_var is not None
-        if self.audio_player_loaded_path is None:
-            self._on_audio_player_open(autoplay=True)
-            return
-        if self.audio_player_current_frame >= self.audio_player_total_frames:
-            self.audio_player_current_frame = 0
-        if self.audio_player_is_playing:
-            return
-        if not self._audio_player_start_playback(self.audio_player_current_frame):
-            return
-        total_stamp = self._audio_player_format_timestamp(self._audio_player_total_seconds(refresh=True))
-        self.audio_player_status_var.set(
-            f"Playing {self.audio_player_loaded_path.name} ({total_stamp})."
-        )
-        if self.audio_player_track_var is not None and self.audio_player_loaded_path is not None:
-            self.audio_player_track_var.set(self.audio_player_loaded_path.name)
-        self.generate_status_var.set(f"Playing {self.audio_player_loaded_path.name}")
-        self._save_audio_player_state()
-
-    def _audio_player_start_playback(self, start_frame: int) -> bool:
-        assert self.audio_player_status_var is not None
-        if self.audio_player_loaded_path is None:
-            self.audio_player_status_var.set("Load a file first.")
-            return False
-        frame = int(max(0, start_frame))
-        if vlc is None:
-            return self._audio_player_start_playback_sounddevice(frame)
-        if not self._ensure_vlc_player():
-            if self._audio_player_can_use_sounddevice():
-                return self._audio_player_start_playback_sounddevice(frame)
-            return False
-        start_seconds = float(frame) / float(max(self.audio_player_sample_rate, 1))
-        target_ms = int(max(0.0, start_seconds * 1000.0))
-        volume = self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5)
-        try:
-            assert self.vlc_audio is not None
-            self.vlc_audio.set_volume(int(round(volume * 100.0)))
-            self.vlc_audio.play()
-            if target_ms > 0:
-                # VLC may ignore immediate seek until playback thread is ready.
-                self.vlc_audio.set_time_ms(target_ms)
-                if self.root is not None:
-                    self.root.after(140, lambda target_ms=target_ms: self._audio_player_seek_vlc_ms(target_ms))
-        except Exception as exc:
-            self.logger.exception("Audio player playback failed")
-            if self._audio_player_can_use_sounddevice():
-                return self._audio_player_start_playback_sounddevice(frame)
-            self.audio_player_status_var.set(f"Playback failed: {exc}")
-            return False
-        self.audio_player_backend = "vlc"
-        self.audio_player_sd_start_frame = 0
-        self.audio_player_sd_started_at = 0.0
-        self.audio_player_current_frame = frame
-        self.audio_player_is_playing = True
-        self.audio_player_is_paused = False
-        self._audio_player_total_seconds(refresh=True)
-        self._audio_player_update_progress()
-        self._audio_player_schedule_tick()
-        self._update_audio_player_buttons()
-        return True
-
-    def _audio_player_can_use_sounddevice(self) -> bool:
-        return sd is not None and self.audio_player_pcm_data is not None and self.audio_player_sample_rate > 0
-
-    def _audio_player_start_playback_sounddevice(self, frame: int) -> bool:
-        assert self.audio_player_status_var is not None
-        if not self._audio_player_can_use_sounddevice():
-            self.audio_player_status_var.set(
-                "Playback backend unavailable. Install VLC or ensure sounddevice+soundfile are available."
-            )
-            return False
-        assert self.audio_player_volume_var is not None
-        assert self.audio_player_pcm_data is not None
-        frame = int(max(0, min(self.audio_player_total_frames, frame)))
-        if frame >= self.audio_player_total_frames:
-            frame = 0
-        if self.audio_player_pcm_data.ndim == 1:
-            chunk = self.audio_player_pcm_data[frame:]
-        else:
-            chunk = self.audio_player_pcm_data[frame:, :]
-        if chunk.size == 0:
-            self.audio_player_status_var.set("Nothing to play.")
-            return False
-        volume = self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5)
-        prepared = np.asarray(chunk, dtype=np.float32)
-        if abs(volume - 1.0) > 1e-6:
-            prepared = np.clip(prepared * float(volume), -1.0, 1.0)
-        try:
-            sd.play(prepared, samplerate=int(self.audio_player_sample_rate), blocking=False)
-        except Exception as exc:
-            self.logger.exception("Sounddevice playback failed")
-            self.audio_player_status_var.set(f"Playback failed: {exc}")
-            return False
-        self.audio_player_backend = "sounddevice"
-        self.audio_player_sd_start_frame = frame
-        self.audio_player_sd_started_at = time.monotonic()
-        self.audio_player_current_frame = frame
-        self.audio_player_is_playing = True
-        self.audio_player_is_paused = False
-        self._audio_player_update_progress()
-        self._audio_player_schedule_tick()
-        self._update_audio_player_buttons()
-        return True
-
-    def _audio_player_seek_vlc_ms(self, target_ms: int) -> None:
-        if self.vlc_audio is None:
-            return
-        try:
-            self.vlc_audio.set_time_ms(int(max(0, target_ms)))
-        except Exception:
-            self.logger.exception("Failed to seek VLC player")
-
-    def _on_audio_player_pause(self) -> None:
-        assert self.audio_player_status_var is not None
-        if not self.audio_player_is_playing:
-            self.audio_player_status_var.set("Nothing is currently playing.")
-            return
-        if self.vlc_audio is not None:
-            try:
-                self.vlc_audio.set_pause(True)
-            except Exception:
-                self.logger.exception("Failed to pause VLC playback")
-        if self.audio_player_backend == "sounddevice" and sd is not None:
-            try:
-                sd.stop()
-            except Exception:
-                self.logger.exception("Failed to pause sounddevice playback")
-        self.audio_player_current_frame = int(self._audio_player_current_seconds() * float(max(self.audio_player_sample_rate, 1)))
-        self.audio_player_is_playing = False
-        self.audio_player_is_paused = True
-        self._audio_player_cancel_tick()
-        self._audio_player_update_progress()
-        position = self._audio_player_format_timestamp(self._audio_player_current_seconds())
-        total = self._audio_player_format_timestamp(self._audio_player_total_seconds())
-        self.audio_player_status_var.set(f"Paused at {position} / {total}.")
-        self._update_audio_player_buttons()
-        self._save_audio_player_state()
-
-    def _on_audio_player_stop(self) -> None:
-        assert self.audio_player_status_var is not None
-        self._stop_audio(preserve_player_position=False)
-        self.audio_player_current_frame = 0
-        self.audio_player_is_paused = False
-        self._audio_player_update_progress()
-        if self.audio_player_loaded_path is not None:
-            self.audio_player_status_var.set(f"Stopped: {self.audio_player_loaded_path.name}")
-            if self.audio_player_track_var is not None:
-                self.audio_player_track_var.set(self.audio_player_loaded_path.name)
-        else:
-            self.audio_player_status_var.set("Stopped.")
-            if self.audio_player_track_var is not None:
-                self.audio_player_track_var.set("No file loaded.")
-        self._update_audio_player_buttons()
-        self._save_audio_player_state()
-
-    def _on_audio_player_seek_back(self) -> None:
-        self._audio_player_seek_relative(-float(self.audio_player_seek_step_seconds))
-
-    def _on_audio_player_seek_forward(self) -> None:
-        self._audio_player_seek_relative(float(self.audio_player_seek_step_seconds))
-
-    def _audio_player_seek_relative(self, delta_seconds: float) -> None:
-        if self.audio_player_loaded_path is None:
-            return
-        current_seconds = self._audio_player_current_seconds()
-        self._audio_player_seek_to_seconds(current_seconds + float(delta_seconds))
-
-    def _on_audio_player_seek_press(self, _event: tk.Event[Any]) -> None:
-        self.audio_player_seek_dragging = True
-
-    def _on_audio_player_seek_release(self, _event: tk.Event[Any]) -> None:
-        self.audio_player_seek_dragging = False
-        if self.audio_player_progress_var is None:
-            return
-        self._audio_player_seek_to_seconds(self.audio_player_progress_var.get())
-
-    def _on_audio_player_seek_change(self, value: str) -> None:
-        if self.audio_player_seek_programmatic:
-            return
-        if self.audio_player_time_var is None:
-            return
-        try:
-            position_seconds = float(value)
-        except Exception:
-            return
-        if position_seconds < 0:
-            position_seconds = 0.0
-        total_seconds = self._audio_player_total_seconds()
-        position_seconds = min(position_seconds, total_seconds)
-        if self.audio_player_seek_dragging:
-            position_label = self._audio_player_format_timestamp(position_seconds)
-            total_label = self._audio_player_format_timestamp(total_seconds)
-            self.audio_player_time_var.set(f"{position_label} / {total_label}")
-
-    def _audio_player_seek_to_seconds(self, seconds: float) -> None:
-        assert self.audio_player_status_var is not None
-        if self.audio_player_loaded_path is None:
-            return
-        total_seconds = self._audio_player_total_seconds(refresh=True)
-        clamped_seconds = self._coerce_float(
-            seconds,
-            default=0.0,
-            min_value=0.0,
-            max_value=total_seconds if total_seconds > 0 else None,
-        )
-        if self.audio_player_total_frames <= 0 and total_seconds > 0:
-            self.audio_player_sample_rate = max(1, self.audio_player_sample_rate)
-            self.audio_player_total_frames = int(total_seconds * float(self.audio_player_sample_rate))
-        target_frame = int(clamped_seconds * float(max(self.audio_player_sample_rate, 1)))
-        if self.audio_player_total_frames > 0:
-            target_frame = max(0, min(self.audio_player_total_frames, target_frame))
-        else:
-            target_frame = max(0, target_frame)
-        was_playing = self.audio_player_is_playing
-        if self.audio_player_backend == "vlc":
-            self._audio_player_seek_vlc_ms(int(round(clamped_seconds * 1000.0)))
-        elif self.audio_player_backend == "sounddevice" and sd is not None:
-            try:
-                sd.stop()
-            except Exception:
-                self.logger.exception("Failed to seek sounddevice playback")
-        self.audio_player_current_frame = target_frame
-        self.audio_player_is_playing = bool(was_playing)
-        self.audio_player_is_paused = (target_frame > 0) and (not was_playing)
-        if self.audio_player_backend == "sounddevice":
-            if was_playing:
-                if not self._audio_player_start_playback_sounddevice(target_frame):
-                    self.audio_player_is_playing = False
-                    self.audio_player_is_paused = target_frame > 0
-            else:
-                self.audio_player_sd_start_frame = target_frame
-                self.audio_player_sd_started_at = 0.0
-        self._audio_player_update_progress()
-        if was_playing:
-            self._audio_player_schedule_tick()
-        else:
-            self._update_audio_player_buttons()
-        position_label = self._audio_player_format_timestamp(clamped_seconds)
-        total_label = self._audio_player_format_timestamp(total_seconds)
-        self.audio_player_status_var.set(f"Seek: {position_label} / {total_label}")
-        self._save_audio_player_state()
-
-    def _on_audio_player_waveform_seek(self, event: tk.Event[Any]) -> None:
-        if self.audio_player_waveform_canvas is None:
-            return
-        width = max(1, int(self.audio_player_waveform_canvas.winfo_width()))
-        ratio = max(0.0, min(1.0, float(event.x) / float(width)))
-        seconds = ratio * self._audio_player_total_seconds()
-        self._audio_player_seek_to_seconds(seconds)
-
-    def _audio_player_schedule_tick(self) -> None:
-        if self.root is None:
-            return
-        self._audio_player_cancel_tick()
-        self.audio_player_tick_job = self.root.after(120, self._on_audio_player_tick)
-
-    def _audio_player_cancel_tick(self) -> None:
-        if self.root is None:
-            self.audio_player_tick_job = None
-            return
-        if self.audio_player_tick_job is None:
-            return
-        try:
-            self.root.after_cancel(self.audio_player_tick_job)
-        except Exception:
-            pass
-        self.audio_player_tick_job = None
-
-    def _on_audio_player_tick(self) -> None:
-        self.audio_player_tick_job = None
-        if not self.audio_player_is_playing:
-            return
-        total_seconds = self._audio_player_total_seconds(refresh=True)
-        current_seconds = self._audio_player_current_seconds()
-        if total_seconds > 0:
-            ratio = max(0.0, min(1.0, current_seconds / total_seconds))
-            if self.audio_player_total_frames <= 0:
-                self.audio_player_sample_rate = 1000
-                self.audio_player_total_frames = int(total_seconds * 1000.0)
-            self.audio_player_current_frame = int(ratio * float(max(1, self.audio_player_total_frames)))
-        else:
-            self.audio_player_current_frame = int(current_seconds * float(max(self.audio_player_sample_rate, 1)))
-        self._audio_player_update_progress()
-        state = None
-        if self.vlc_audio is not None:
-            try:
-                state = self.vlc_audio.get_state()
-            except Exception:
-                state = None
-        ended_states = set()
-        if vlc is not None:
-            ended_states = {vlc.State.Ended, vlc.State.Stopped, vlc.State.Error}
-        reached_end = total_seconds > 0 and current_seconds >= max(0.0, total_seconds - 0.05)
-        if state in ended_states or reached_end:
-            if self.audio_player_total_frames > 0:
-                self.audio_player_current_frame = self.audio_player_total_frames
-            self.audio_player_is_playing = False
-            self.audio_player_is_paused = False
-            if self._audio_player_try_auto_next():
-                return
-            if self.audio_player_status_var is not None:
-                if self.audio_player_loaded_path is not None:
-                    self.audio_player_status_var.set(f"Playback complete: {self.audio_player_loaded_path.name}")
-                else:
-                    self.audio_player_status_var.set("Playback complete.")
-            self._update_audio_player_buttons()
-            self._save_audio_player_state()
-            return
-        self._audio_player_schedule_tick()
-
-    def _audio_player_update_progress(self) -> None:
-        if self.audio_player_progress_var is None or self.audio_player_time_var is None:
-            return
-        total_seconds = self._audio_player_total_seconds(refresh=True)
-        current_seconds = self._audio_player_current_seconds()
-        if total_seconds <= 0:
-            self.audio_player_seek_programmatic = True
-            try:
-                self.audio_player_progress_var.set(0.0)
-            finally:
-                self.audio_player_seek_programmatic = False
-            self.audio_player_time_var.set("00:00 / 00:00")
-            self._audio_player_redraw_waveform()
-            return
-        if self.audio_player_total_frames <= 0:
-            self.audio_player_sample_rate = 1000
-            self.audio_player_total_frames = int(total_seconds * 1000.0)
-        self.audio_player_current_frame = int(
-            max(0.0, min(1.0, current_seconds / max(total_seconds, 0.001))) * float(max(1, self.audio_player_total_frames))
-        )
-        if self.audio_player_seek_scale is not None:
-            self.audio_player_seek_scale.configure(to=max(0.001, total_seconds))
-        if not self.audio_player_seek_dragging:
-            self.audio_player_seek_programmatic = True
-            try:
-                self.audio_player_progress_var.set(current_seconds)
-            finally:
-                self.audio_player_seek_programmatic = False
-        position_label = self._audio_player_format_timestamp(current_seconds)
-        total_label = self._audio_player_format_timestamp(total_seconds)
-        self.audio_player_time_var.set(f"{position_label} / {total_label}")
-        self._audio_player_redraw_waveform()
-
-    def _update_audio_player_buttons(self) -> None:
-        loaded = self.audio_player_loaded_path is not None
-        if self.audio_player_play_btn is not None:
-            self.audio_player_play_btn.state(["!disabled"] if loaded and not self.audio_player_is_playing else ["disabled"])
-        if self.audio_player_pause_btn is not None:
-            self.audio_player_pause_btn.state(["!disabled"] if self.audio_player_is_playing else ["disabled"])
-        if self.audio_player_stop_btn is not None:
-            can_stop = loaded and (self.audio_player_is_playing or self.audio_player_is_paused or self.audio_player_current_frame > 0)
-            self.audio_player_stop_btn.state(["!disabled"] if can_stop else ["disabled"])
-
-    def _on_audio_player_minimal_toggle(self) -> None:
-        self._apply_audio_player_minimal_mode()
-
-    def _apply_audio_player_minimal_mode(self) -> None:
-        minimal = bool(self.audio_player_minimal_var.get()) if self.audio_player_minimal_var is not None else False
-        managed_frames = (
-            self.audio_player_track_frame,
-            self.audio_player_controls_frame,
-            self.audio_player_volume_frame,
-            self.audio_player_autonext_frame,
-            self.audio_player_status_frame,
-        )
-        for frame in managed_frames:
-            if frame is None or not frame.winfo_exists():
-                continue
-            if minimal:
-                frame.grid_remove()
-            else:
-                frame.grid()
-        if self.audio_player_waveform_frame is not None and self.audio_player_waveform_frame.winfo_exists():
-            self.audio_player_waveform_frame.grid_configure(pady=(6, 4) if minimal else (8, 6))
-        if self.audio_player_seek_frame is not None and self.audio_player_seek_frame.winfo_exists():
-            self.audio_player_seek_frame.grid_configure(pady=(0, 6) if minimal else (6, 6))
-
-    def _sync_audio_player_control_labels(self) -> None:
-        assert self.audio_player_volume_var is not None
-        volume = self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5)
-        if self.audio_player_volume_value_label is not None:
-            percent = int(round(volume * 100.0))
-            self.audio_player_volume_value_label.configure(text=f"{percent:>3d}%")
-
-    def _on_audio_player_volume_scale(self) -> None:
-        self._sync_audio_player_control_labels()
-        if self.vlc_audio is not None and self.audio_player_volume_var is not None:
-            try:
-                volume = self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5)
-                self.vlc_audio.set_volume(int(round(volume * 100.0)))
-            except Exception:
-                self.logger.exception("Failed to update VLC volume")
-        self._save_audio_player_state()
-
-    def _on_audio_player_volume_var_updated(self) -> None:
-        self._sync_audio_player_control_labels()
-
-    def _audio_player_rebuild_waveform(self, audio: np.ndarray) -> None:
-        mono = np.asarray(audio, dtype=np.float32)
-        if mono.ndim == 2:
-            mono = mono.mean(axis=1)
-        mono = np.abs(mono).flatten()
-        if mono.size == 0:
-            self.audio_player_waveform = None
-            self._audio_player_redraw_waveform()
-            return
-        target_bins = 400
-        if mono.size < target_bins:
-            padded = np.pad(mono, (0, target_bins - mono.size), mode="constant")
-            envelope = padded
-        else:
-            stride = int(np.ceil(float(mono.size) / float(target_bins)))
-            padded_size = stride * target_bins
-            padded = np.pad(mono, (0, padded_size - mono.size), mode="constant")
-            envelope = padded.reshape(target_bins, stride).max(axis=1)
-        peak = float(np.max(envelope)) if envelope.size else 0.0
-        if peak > 1e-8:
-            envelope = envelope / peak
-        self.audio_player_waveform = envelope.astype(np.float32, copy=False)
-        self._audio_player_redraw_waveform()
-
-    def _audio_player_redraw_waveform(self) -> None:
-        canvas = self.audio_player_waveform_canvas
-        if canvas is None or not canvas.winfo_exists():
-            return
-        width = max(1, int(canvas.winfo_width()))
-        height = max(1, int(canvas.winfo_height()))
-        canvas.delete("all")
-        waveform = self.audio_player_waveform
-        if waveform is None or waveform.size == 0:
-            canvas.create_text(
-                width // 2,
-                height // 2,
-                text="No waveform",
-                fill="#6f7888",
-                font=("Segoe UI", 9),
-            )
-            return
-        midpoint = height / 2.0
-        amplitude = max(2.0, (height / 2.0) - 4.0)
-        played_limit = int(round(self._audio_player_progress_fraction() * float(width - 1)))
-        played_color = "#00ff41"
-        pending_color = "#1f4f1f"
-        samples = waveform
-        sample_count = samples.size
-        for x in range(width):
-            sample_index = int((x / max(1, width - 1)) * (sample_count - 1))
-            value = float(samples[sample_index])
-            half = amplitude * value
-            color = played_color if x <= played_limit else pending_color
-            canvas.create_line(x, midpoint - half, x, midpoint + half, fill=color)
-
-    def _audio_player_progress_fraction(self) -> float:
-        total_seconds = self._audio_player_total_seconds()
-        if total_seconds <= 0:
-            return 0.0
-        current_seconds = self._audio_player_current_seconds()
-        return max(0.0, min(1.0, current_seconds / total_seconds))
-
-    def _audio_player_try_auto_next(self) -> bool:
-        assert self.audio_player_auto_next_var is not None
-        if not self.audio_player_auto_next_var.get():
-            return False
-        if self.audio_player_queue_index is None:
-            return False
-        next_index = int(self.audio_player_queue_index) + 1
-        while next_index < len(self.history_state):
-            target = Path(self.history_state[next_index])
-            if target.is_file():
-                if self.audio_player_status_var is not None:
-                    self.audio_player_status_var.set(f"Queue: loading {target.name}...")
-                self._select_history_index(next_index)
-                self._load_audio_file_async(target, autoplay=True, history_index=next_index)
-                return True
-            next_index += 1
-        return False
-
-    def _find_history_index(self, path: Path) -> int | None:
-        target = str(path)
-        for index, value in enumerate(self.history_state):
-            if str(value) == target:
-                return index
-        return None
-
-    def _audio_player_total_seconds(self, *, refresh: bool = False) -> float:
-        if self.vlc_audio is not None and (refresh or self.audio_player_media_length_ms <= 0):
-            try:
-                length_ms = int(self.vlc_audio.get_length_ms())
-            except Exception:
-                length_ms = -1
-            if length_ms > 0:
-                self.audio_player_media_length_ms = length_ms
-        if self.audio_player_media_length_ms > 0:
-            return float(self.audio_player_media_length_ms) / 1000.0
-        if self.audio_player_total_frames > 0 and self.audio_player_sample_rate > 0:
-            return float(self.audio_player_total_frames) / float(self.audio_player_sample_rate)
-        return 0.0
-
-    def _audio_player_current_seconds(self) -> float:
-        if self.vlc_audio is not None:
-            try:
-                current_ms = int(self.vlc_audio.get_time_ms())
-            except Exception:
-                current_ms = -1
-            if current_ms >= 0:
-                return float(current_ms) / 1000.0
-        if (
-            self.audio_player_backend == "sounddevice"
-            and self.audio_player_is_playing
-            and self.audio_player_sample_rate > 0
-            and self.audio_player_sd_started_at > 0.0
-        ):
-            elapsed = max(0.0, time.monotonic() - self.audio_player_sd_started_at)
-            current_frame = self.audio_player_sd_start_frame + int(elapsed * float(self.audio_player_sample_rate))
-            if self.audio_player_total_frames > 0:
-                current_frame = min(self.audio_player_total_frames, current_frame)
-            return float(current_frame) / float(self.audio_player_sample_rate)
-        if self.audio_player_sample_rate > 0:
-            return float(self.audio_player_current_frame) / float(self.audio_player_sample_rate)
-        return 0.0
-
-    @staticmethod
-    def _audio_player_format_timestamp(seconds: float) -> str:
-        total = max(0, int(seconds))
-        minutes, secs = divmod(total, 60)
-        return f"{minutes:02d}:{secs:02d}"
-
-    def _bind_audio_player_shortcuts(self) -> None:
-        if self.root is None or self.audio_player_shortcuts_bound:
-            return
-        self.root.bind_all("<space>", self._on_audio_shortcut_play_pause, add="+")
-        self.root.bind_all(
-            "<Control-Left>",
-            lambda event: self._on_audio_shortcut_seek(event, -float(self.audio_player_seek_step_seconds)),
-            add="+",
-        )
-        self.root.bind_all(
-            "<Control-Right>",
-            lambda event: self._on_audio_shortcut_seek(event, float(self.audio_player_seek_step_seconds)),
-            add="+",
-        )
-        self.root.bind_all("<Control-Up>", lambda event: self._on_audio_shortcut_volume(event, 0.05), add="+")
-        self.root.bind_all("<Control-Down>", lambda event: self._on_audio_shortcut_volume(event, -0.05), add="+")
-        self.audio_player_shortcuts_bound = True
-
-    def _on_audio_shortcut_play_pause(self, event: tk.Event[Any]) -> str | None:
-        if self._is_text_input_widget(getattr(event, "widget", None)):
-            return None
-        if self.audio_player_is_playing:
-            self._on_audio_player_pause()
-            return "break"
-        if self.audio_player_loaded_path is not None:
-            self._on_audio_player_play()
-            return "break"
-        return None
-
-    def _on_audio_shortcut_seek(self, event: tk.Event[Any], delta_seconds: float) -> str | None:
-        if self._is_text_input_widget(getattr(event, "widget", None)):
-            return None
-        if self.audio_player_loaded_path is None:
-            return None
-        self._audio_player_seek_relative(float(delta_seconds))
-        return "break"
-
-    def _on_audio_shortcut_volume(self, event: tk.Event[Any], delta: float) -> str | None:
-        if self._is_text_input_widget(getattr(event, "widget", None)):
-            return None
-        if self.audio_player_volume_var is None:
-            return None
-        current = self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5)
-        updated = self._coerce_float(current + float(delta), default=1.0, min_value=0.0, max_value=1.5)
-        self.audio_player_volume_var.set(updated)
-        self._save_audio_player_state()
-        return "break"
-
-    @staticmethod
-    def _is_text_input_widget(widget: Any) -> bool:
-        if widget is None:
-            return False
-        try:
-            class_name = str(widget.winfo_class()).lower()
-        except Exception:
-            return False
-        return class_name in {
-            "entry",
-            "tentry",
-            "text",
-            "spinbox",
-            "listbox",
-            "ttk::combobox",
-            "combobox",
-        }
-
-    def _restore_audio_player_from_saved_state(self) -> None:
-        path = self.audio_player_restore_path
-        if path is None:
-            return
-        if not path.is_file():
-            return
-        history_index = self._find_history_index(path)
-        if history_index is not None:
-            self._select_history_index(history_index)
-        self._load_audio_file_async(
-            path,
-            autoplay=False,
-            history_index=history_index,
-            resume_seconds=self.audio_player_restore_position_seconds,
+        self._generate_tab_feature.on_tokenize()
+    def _sync_audio_player_feature_runtime(self) -> None:
+        configure_audio_player_runtime_modules(
+            sd_module=sd,
+            vlc_module=vlc,
+            sf_module=sf,
+            filedialog_module=filedialog,
         )
 
-    def _load_audio_player_state(self) -> dict[str, Any]:
-        path = self.audio_player_state_path
-        if not path.is_file():
-            return {}
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            self.logger.exception("Failed to read audio player state")
-            return {}
-        if not isinstance(payload, dict):
-            return {}
-        return payload
-
-    def _save_audio_player_state(self) -> None:
-        if self.audio_player_volume_var is None or self.audio_player_auto_next_var is None:
+    def __setattr__(self, name: str, value) -> None:
+        state_field = type(self)._AUDIO_STATE_FIELD_MAP.get(name)
+        if state_field is not None and "audio_player_state" in self.__dict__:
+            setattr(self.audio_player_state, state_field, value)
             return
-        last_position_seconds = max(0.0, float(self._audio_player_current_seconds()))
-        state = {
-            "volume": self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5),
-            "auto_next": bool(self.audio_player_auto_next_var.get()),
-            "last_path": str(self.audio_player_loaded_path) if self.audio_player_loaded_path is not None else "",
-            "last_position_seconds": last_position_seconds,
-            "queue_index": self.audio_player_queue_index,
-        }
-        path = self.audio_player_state_path
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            self.logger.exception("Failed to save audio player state")
+        object.__setattr__(self, name, value)
 
-    @staticmethod
-    def _coerce_float(
-        value: Any,
-        *,
-        default: float,
-        min_value: float | None = None,
-        max_value: float | None = None,
-    ) -> float:
-        try:
-            parsed = float(value)
-        except Exception:
-            parsed = float(default)
-        if min_value is not None:
-            parsed = max(float(min_value), parsed)
-        if max_value is not None:
-            parsed = min(float(max_value), parsed)
-        return float(parsed)
+    def __getattr__(self, name: str):
+        state_field = type(self)._AUDIO_STATE_FIELD_MAP.get(name)
+        if state_field is not None and "audio_player_state" in self.__dict__:
+            return getattr(self.audio_player_state, state_field)
+        if name.startswith("_") and not name.startswith("__"):
+            feature_attr = getattr(AudioPlayerFeature, name, None)
+            if callable(feature_attr):
+                def _delegated(*args, _name=name, **kwargs):
+                    self._sync_audio_player_feature_runtime()
+                    feature_method = getattr(self._audio_player_feature, _name)
+                    return feature_method(*args, **kwargs)
 
-    @staticmethod
-    def _coerce_bool(value: Any, *, default: bool) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized in {"1", "true", "yes", "on"}:
-                return True
-            if normalized in {"0", "false", "no", "off"}:
-                return False
-        return bool(default)
+                setattr(_delegated, "_audio_player_delegate_wrapper", True)
+                return _delegated
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
     def _on_stream_start(self) -> None:
-        if self.stream_thread is not None and self.stream_thread.is_alive():
-            self.stream_status_var.set("Stream is already running.")
-            return
-        self.stream_stop_event.clear()
-        self.stream_status_var.set("Streaming...")
-        self.stream_btn.state(["disabled"])
-        self.stop_stream_btn.state(["!disabled"])
-        self._stop_audio(preserve_player_position=True)
-        kwargs = self._base_generation_kwargs()
-
-        def worker() -> None:
-            if sd is None:
-                self._run_on_ui(
-                    lambda: self.stream_status_var.set(
-                        "sounddevice is not installed. Stream playback is unavailable."
-                    )
-                )
-                self._run_on_ui(self._finalize_stream_buttons)
-                return
-            chunks = 0
-            try:
-                iterator = self.generate_all(**kwargs)
-                for sample_rate, chunk in iterator:
-                    if self.stream_stop_event.is_set():
-                        break
-                    audio = np.asarray(chunk, dtype=np.float32).flatten()
-                    if audio.size == 0:
-                        continue
-                    chunks += 1
-                    sd.play(audio, samplerate=int(sample_rate), blocking=True)
-            except Exception as exc:  # pragma: no cover - UI threading path
-                self.logger.exception("Stream playback failed")
-                message = f"Stream failed: {exc}"
-                self._run_on_ui(
-                    lambda message=message: self.stream_status_var.set(message)
-                )
-            else:
-                if self.stream_stop_event.is_set():
-                    self._run_on_ui(lambda: self.stream_status_var.set("Stream stopped."))
-                else:
-                    self._run_on_ui(
-                        lambda: self.stream_status_var.set(f"Stream complete: {chunks} chunk(s).")
-                    )
-            finally:
-                try:
-                    sd.stop()
-                except Exception:
-                    self.logger.exception("Failed to stop stream device")
-                self._run_on_ui(self._finalize_stream_buttons)
-
-        self.stream_thread = threading.Thread(target=worker, daemon=True)
-        self.stream_thread.start()
-
+        self._stream_tab_feature.on_stream_start(sd_module=sd)
     def _on_stream_stop(self) -> None:
-        self.stream_stop_event.set()
-        if sd is not None:
-            try:
-                sd.stop()
-            except Exception:
-                self.logger.exception("Failed to stop stream playback")
-        self.stream_status_var.set("Stopping stream...")
-
+        self._stream_tab_feature.on_stream_stop(sd_module=sd)
     def _finalize_stream_buttons(self) -> None:
-        self.stream_btn.state(["!disabled"])
-        self.stop_stream_btn.state(["disabled"])
+        self._stream_tab_feature.finalize_stream_buttons()
 
     def _on_pronunciation_load(self) -> None:
         if not callable(self.load_pronunciation_rules):
@@ -3795,191 +2050,28 @@ class TkinterDesktopApp(DesktopApp):
             self.pronunciation_status_var.set(status)
 
         self._threaded(work, on_success)
-
     def _on_export_morphology(self) -> None:
-        if not callable(self.export_morphology_sheet):
-            self.export_status_var.set("Morphology DB export is not configured.")
-            return
-        dataset = self.export_dataset_var.get()
-        export_format = self.export_format_var.get()
-
-        def work():
-            if self.export_supports_format:
-                return self.export_morphology_sheet(dataset, export_format)
-            return self.export_morphology_sheet(dataset)
-
-        def on_success(payload: tuple[str | None, str]) -> None:
-            path, status = payload
-            self.export_status_var.set(status)
-            self.export_path_var.set(path or "")
-            self.generate_status_var.set(status if not path else f"{status} {os.path.basename(path)}")
-            self._on_morphology_preview_dataset_change()
-
-        self._threaded(work, on_success)
-
+        self._morphology_tab_feature.on_export_morphology()
     def _on_morphology_preview_dataset_change(self) -> None:
-        if self.morph_preview_status_var is None:
-            return
-        dataset = str(self.export_dataset_var.get() if self.export_dataset_var is not None else "lexemes").strip().lower()
-        if not callable(self.morphology_db_view):
-            self._set_morphology_preview_table(["No data"], [["No data"]], rows_count=0, unique_count=0)
-            return
-        self.morph_preview_status_var.set("Rows: 0 | Unique: 0 | Last updated: loading...")
-
-        def work() -> tuple[str, dict[str, Any], str]:
-            if dataset == "pos_table":
-                table_update, status = self.morphology_db_view("lexemes", 1000, 0)
-                pos_update = self._build_pos_table_preview_from_lexemes(table_update)
-                return dataset, pos_update, status
-            table_update, status = self.morphology_db_view(dataset, 50, 0)
-            return dataset, table_update, status
-
-        def on_success(payload: tuple[str, dict[str, Any], str]) -> None:
-            selected_dataset, table_update, _status = payload
-            headers, rows = self._project_morphology_preview_rows(selected_dataset, table_update)
-            if not rows:
-                fallback_headers = headers if headers else ["No data"]
-                self._set_morphology_preview_table(fallback_headers, [["No data"]], rows_count=0, unique_count=0)
-                return
-            unique_values: set[str] = set()
-            for row in rows:
-                for cell in row:
-                    cell_text = str(cell or "").strip()
-                    if cell_text:
-                        unique_values.add(cell_text)
-            self._set_morphology_preview_table(
-                headers,
-                rows,
-                rows_count=len(rows),
-                unique_count=len(unique_values),
-            )
-
-        self._threaded(work, on_success)
-
+        self._morphology_tab_feature.on_morphology_preview_dataset_change()
     def _project_morphology_preview_rows(
         self,
         dataset: str,
         table_update: dict[str, Any],
     ) -> tuple[list[str], list[list[str]]]:
-        headers = [str(item) for item in extract_morph_headers(table_update)]
-        raw_rows = table_update.get("value", [])
-        if not isinstance(raw_rows, list):
-            raw_rows = []
-        rows: list[list[str]] = []
-        for row in raw_rows:
-            if isinstance(row, (list, tuple)):
-                rows.append([str(item or "") for item in row])
-            else:
-                rows.append([str(row or "")])
+        return self._morphology_tab_feature.project_morphology_preview_rows(dataset, table_update)
 
-        column_specs: dict[str, list[tuple[str, tuple[str, ...]]]] = {
-            "lexemes": [
-                ("token_text", ("token_text", "dedup_key", "lemma")),
-                ("lemma", ("lemma",)),
-                ("upos", ("upos",)),
-            ],
-            "occurrences": [
-                ("token_text", ("token_text", "token")),
-                ("lemma", ("lemma",)),
-            ],
-            "expressions": [
-                ("expression_text", ("expression_text",)),
-                ("type", ("expression_type", "type")),
-            ],
-            "reviews": [
-                ("sentence", ("sentence", "token_text", "source")),
-                ("local_tag", ("local_tag", "local_upos", "status")),
-                ("lm_tag", ("lm_tag", "lm_upos", "is_match")),
-            ],
-        }
-        normalized_dataset = str(dataset or "").strip().lower()
-        specs = column_specs.get(normalized_dataset)
-        if specs is None:
-            preview_headers = headers[:]
-            preview_rows = [row[: len(preview_headers)] for row in rows[:50]]
-            return preview_headers, preview_rows
-
-        header_index = {name.strip().lower(): idx for idx, name in enumerate(headers)}
-        preview_headers = [display for display, _aliases in specs]
-        preview_rows: list[list[str]] = []
-        for row in rows[:50]:
-            projected_row: list[str] = []
-            for _display, aliases in specs:
-                selected_value = ""
-                for alias in aliases:
-                    idx = header_index.get(alias.lower())
-                    if idx is None or idx >= len(row):
-                        continue
-                    selected_value = str(row[idx] or "")
-                    break
-                projected_row.append(selected_value)
-            preview_rows.append(projected_row)
-        return preview_headers, preview_rows
-
+    def _project_morphology_preview_rows_impl(
+        self,
+        dataset: str,
+        table_update: dict[str, Any],
+    ) -> tuple[list[str], list[list[str]]]:
+        return project_morphology_preview_rows(dataset, table_update, max_rows=50)
     def _build_pos_table_preview_from_lexemes(self, table_update: dict[str, Any]) -> dict[str, Any]:
-        headers = [str(item) for item in extract_morph_headers(table_update)]
-        raw_rows = table_update.get("value", [])
-        if not isinstance(raw_rows, list):
-            raw_rows = []
-        if not headers or not raw_rows:
-            return {"headers": ["No data"], "value": []}
+        return self._morphology_tab_feature.build_pos_table_preview_from_lexemes(table_update)
 
-        header_index = {name.strip().lower(): idx for idx, name in enumerate(headers)}
-        upos_idx = header_index.get("upos")
-        lemma_idx = header_index.get("lemma")
-        if upos_idx is None or lemma_idx is None:
-            return {"headers": ["No data"], "value": []}
-
-        upos_buckets: dict[str, list[str]] = {}
-        upos_seen: dict[str, set[str]] = {}
-        for row in raw_rows:
-            if not isinstance(row, (list, tuple)):
-                continue
-            upos_text = str(row[upos_idx] if upos_idx < len(row) else "").strip().upper()
-            lemma_text = str(row[lemma_idx] if lemma_idx < len(row) else "").strip()
-            if not upos_text or not lemma_text:
-                continue
-            seen_values = upos_seen.setdefault(upos_text, set())
-            if lemma_text in seen_values:
-                continue
-            seen_values.add(lemma_text)
-            upos_buckets.setdefault(upos_text, []).append(lemma_text)
-
-        if not upos_buckets:
-            return {"headers": ["No data"], "value": []}
-
-        column_pairs: list[tuple[str, str]] = [
-            ("Noun", "NOUN"),
-            ("Verb", "VERB"),
-            ("Adjective", "ADJ"),
-            ("Adverb", "ADV"),
-            ("Pronoun", "PRON"),
-            ("ProperNoun", "PROPN"),
-            ("Number", "NUM"),
-            ("Determiner", "DET"),
-            ("Adposition", "ADP"),
-            ("CConj", "CCONJ"),
-            ("SConj", "SCONJ"),
-            ("Particle", "PART"),
-            ("Interjection", "INTJ"),
-            ("Symbol", "SYM"),
-            ("Other", "X"),
-        ]
-        known_upos = {upos for _label, upos in column_pairs}
-        for upos in sorted([name for name in upos_buckets.keys() if name not in known_upos]):
-            column_pairs.append((upos, upos))
-
-        preview_headers = [label for label, _upos in column_pairs]
-        max_rows = max((len(upos_buckets.get(upos, [])) for _label, upos in column_pairs), default=0)
-        preview_rows: list[list[str]] = []
-        for row_idx in range(min(max_rows, 50)):
-            values: list[str] = []
-            for _label, upos in column_pairs:
-                items = upos_buckets.get(upos, [])
-                values.append(items[row_idx] if row_idx < len(items) else "")
-            preview_rows.append(values)
-        return {"headers": preview_headers, "value": preview_rows}
-
+    def _build_pos_table_preview_from_lexemes_impl(self, table_update: dict[str, Any]) -> dict[str, Any]:
+        return build_pos_table_preview_from_lexemes(table_update, max_rows=50)
     def _set_morphology_preview_table(
         self,
         headers: list[str],
@@ -3988,205 +2080,26 @@ class TkinterDesktopApp(DesktopApp):
         rows_count: int,
         unique_count: int,
     ) -> None:
-        if self.morph_preview_tree is None or self.morph_preview_status_var is None:
-            return
-        safe_headers = [str(item) for item in (headers or ["No data"])]
-        safe_rows: list[list[str]] = []
-        for row in rows:
-            row_values = list(row) if isinstance(row, (list, tuple)) else [str(row)]
-            if len(row_values) < len(safe_headers):
-                row_values.extend([""] * (len(safe_headers) - len(row_values)))
-            safe_rows.append([str(item or "") for item in row_values[: len(safe_headers)]])
-
-        self.morph_preview_headers = safe_headers
-        self.morph_preview_tree.delete(*self.morph_preview_tree.get_children())
-        self.morph_preview_tree.configure(columns=self.morph_preview_headers)
-        for header in self.morph_preview_headers:
-            self.morph_preview_tree.heading(header, text=header)
-            self.morph_preview_tree.column(header, width=140, stretch=True, anchor="w")
-        for row in safe_rows:
-            self.morph_preview_tree.insert("", tk.END, values=row)
-
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.morph_preview_status_var.set(
-            f"Rows: {int(rows_count)} | Unique: {int(unique_count)} | Last updated: {timestamp}"
+        self._morphology_tab_feature.set_morphology_preview_table(
+            headers,
+            rows,
+            rows_count=rows_count,
+            unique_count=unique_count,
         )
 
-    def _on_lesson_generate(self) -> None:
-        if not callable(self.build_lesson_for_tts):
-            self.lesson_status_var.set("Lesson builder is not configured.")
-            return
-        raw_text = self._read_text(self.lesson_raw_text)
-        extra = self._read_text(self.llm_extra_instructions_text)
-        self.lesson_status_var.set("Generating lesson...")
+    def _format_morphology_preview_table(
+        self,
+        headers: list[str],
+        rows: list[list[str]],
+    ) -> tuple[list[str], list[list[str]]]:
+        return format_morphology_preview_table(headers, rows)
 
-        def work():
-            return self.build_lesson_for_tts(
-                raw_text,
-                self.llm_base_url_var.get(),
-                self.llm_api_key_var.get(),
-                self.llm_model_var.get(),
-                self.llm_temperature_var.get(),
-                self.llm_max_tokens_var.get(),
-                self.llm_timeout_seconds_var.get(),
-                extra,
-            )
-
-        def on_success(payload: tuple[str, str]) -> None:
-            lesson_text, status = payload
-            self._write_text(self.lesson_output_text, lesson_text)
-            self.lesson_status_var.set(status)
-
-        self._threaded(work, on_success)
-
-    def _on_lesson_copy_to_input(self) -> None:
-        text = self._read_text(self.lesson_output_text)
-        if not text:
-            self.lesson_status_var.set("Lesson output is empty.")
-            return
-        self._write_text(self.input_text, text)
-        self.lesson_status_var.set("Lesson copied to main TTS input.")
-
+    def _count_unique_non_empty_cells(self, rows: list[list[str]]) -> int:
+        return count_unique_non_empty_cells(rows)
     def _on_morph_refresh(self) -> None:
-        if not callable(self.morphology_db_view):
-            self.morph_status_var.set("Morphology DB is not configured.")
-            return
-        dataset = self.morph_dataset_var.get()
-        limit = int(self.morph_limit_var.get())
-        offset = int(self.morph_offset_var.get())
-        self.morph_status_var.set("Loading...")
-
-        def work():
-            return self.morphology_db_view(dataset, limit, offset)
-
-        def on_success(payload: tuple[dict[str, Any], str]) -> None:
-            table_update, status = payload
-            self._apply_table_update(table_update)
-            self.morph_status_var.set(status)
-            self.selected_morph_row_var.set("")
-            self.morph_delete_armed = ""
-
-        self._threaded(work, on_success)
-
+        self._morphology_tab_feature.on_morph_refresh()
     def _apply_table_update(self, table_update: dict[str, Any]) -> None:
-        if self.morph_tree is None:
-            return
-        headers = extract_morph_headers(table_update)
-        rows = table_update.get("value", [])
-        if not isinstance(rows, list):
-            rows = []
-        if not headers:
-            headers = ["No data"]
-            rows = [[]]
-        self.morph_headers = [str(item) for item in headers]
-        self.morph_tree.delete(*self.morph_tree.get_children())
-        self.morph_tree.configure(columns=self.morph_headers)
-        for header in self.morph_headers:
-            self.morph_tree.heading(header, text=header)
-            self.morph_tree.column(header, width=120, stretch=True, anchor="w")
-        for row in rows:
-            row_values = list(row) if isinstance(row, (list, tuple)) else [str(row)]
-            if len(row_values) < len(self.morph_headers):
-                row_values.extend([""] * (len(self.morph_headers) - len(row_values)))
-            self.morph_tree.insert("", tk.END, values=row_values[: len(self.morph_headers)])
-
-    def _on_morph_select_row(self, _event: tk.Event[Any]) -> None:
-        if self.morph_tree is None:
-            return
-        selected_items = self.morph_tree.selection()
-        if not selected_items:
-            return
-        item_id = selected_items[0]
-        row_values = self.morph_tree.item(item_id, "values")
-        try:
-            selected_row_id, payload = build_morph_update_payload(
-                self.morph_dataset_var.get(),
-                self.morph_headers,
-                row_values,
-            )
-        except ValueError as exc:
-            self.morph_status_var.set(f"Selection failed: {exc}")
-            return
-        self.selected_morph_row_var.set(selected_row_id)
-        self._write_text(self.morph_update_json_text, json.dumps(payload, ensure_ascii=False))
-        self.morph_status_var.set(f"Selected row id/key={selected_row_id}.")
-        self.morph_delete_armed = ""
-
-    def _on_morph_add(self) -> None:
-        if not callable(self.morphology_db_add):
-            self.morph_status_var.set("Morphology DB is not configured.")
-            return
-        dataset = self.morph_dataset_var.get()
-        row_json = self._read_text(self.morph_add_json_text)
-        limit = int(self.morph_limit_var.get())
-        offset = int(self.morph_offset_var.get())
-        self.morph_status_var.set("Adding row...")
-
-        def work():
-            return self.morphology_db_add(dataset, row_json, limit, offset)
-
-        def on_success(payload: tuple[dict[str, Any], str]) -> None:
-            table_update, status = payload
-            self._apply_table_update(table_update)
-            self.morph_status_var.set(status)
-            self.selected_morph_row_var.set("")
-            self.morph_delete_armed = ""
-
-        self._threaded(work, on_success)
-
-    def _on_morph_update(self) -> None:
-        if not callable(self.morphology_db_update):
-            self.morph_status_var.set("Morphology DB is not configured.")
-            return
-        dataset = self.morph_dataset_var.get()
-        row_id = self.selected_morph_row_var.get()
-        row_json = self._read_text(self.morph_update_json_text)
-        limit = int(self.morph_limit_var.get())
-        offset = int(self.morph_offset_var.get())
-        self.morph_status_var.set("Updating row...")
-
-        def work():
-            return self.morphology_db_update(dataset, row_id, row_json, limit, offset)
-
-        def on_success(payload: tuple[dict[str, Any], str]) -> None:
-            table_update, status = payload
-            self._apply_table_update(table_update)
-            self.morph_status_var.set(status)
-            self.selected_morph_row_var.set("")
-            self.morph_delete_armed = ""
-
-        self._threaded(work, on_success)
-
-    def _on_morph_delete(self) -> None:
-        if not callable(self.morphology_db_delete):
-            self.morph_status_var.set("Morphology DB is not configured.")
-            return
-        selected = self.selected_morph_row_var.get()
-        should_delete, next_armed, message = resolve_morph_delete_confirmation(
-            selected,
-            self.morph_delete_armed,
-        )
-        self.morph_delete_armed = next_armed
-        if not should_delete:
-            self.morph_status_var.set(message)
-            return
-        dataset = self.morph_dataset_var.get()
-        limit = int(self.morph_limit_var.get())
-        offset = int(self.morph_offset_var.get())
-        self.morph_status_var.set("Deleting row...")
-
-        def work():
-            return self.morphology_db_delete(dataset, selected, limit, offset)
-
-        def on_success(payload: tuple[dict[str, Any], str]) -> None:
-            table_update, status = payload
-            self._apply_table_update(table_update)
-            self.morph_status_var.set(status)
-            self.selected_morph_row_var.set("")
-            self.morph_delete_armed = ""
-
-        self._threaded(work, on_success)
-
+        self._morphology_tab_feature.apply_table_update(table_update)
 
 def create_tkinter_app(
     *,
@@ -4199,18 +2112,12 @@ def create_tkinter_app(
     predict,
     export_morphology_sheet=None,
     morphology_db_view=None,
-    morphology_db_add=None,
-    morphology_db_update=None,
-    morphology_db_delete=None,
     load_pronunciation_rules=None,
     apply_pronunciation_rules=None,
     import_pronunciation_rules=None,
     export_pronunciation_rules=None,
-    build_lesson_for_tts=None,
     set_tts_only_mode=None,
-    set_llm_only_mode=None,
     tts_only_mode_default: bool = False,
-    llm_only_mode_default: bool = False,
     history_service=None,
     choices: Mapping[str, str] | None = None,
 ) -> DesktopApp:
@@ -4225,18 +2132,12 @@ def create_tkinter_app(
         predict=predict,
         export_morphology_sheet=export_morphology_sheet,
         morphology_db_view=morphology_db_view,
-        morphology_db_add=morphology_db_add,
-        morphology_db_update=morphology_db_update,
-        morphology_db_delete=morphology_db_delete,
         load_pronunciation_rules=load_pronunciation_rules,
         apply_pronunciation_rules=apply_pronunciation_rules,
         import_pronunciation_rules=import_pronunciation_rules,
         export_pronunciation_rules=export_pronunciation_rules,
-        build_lesson_for_tts=build_lesson_for_tts,
         set_tts_only_mode=set_tts_only_mode,
-        set_llm_only_mode=set_llm_only_mode,
         tts_only_mode_default=tts_only_mode_default,
-        llm_only_mode_default=llm_only_mode_default,
         history_service=history_service,
         choices=choices,
     )
