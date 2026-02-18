@@ -107,7 +107,10 @@ logger.debug(
     "MORPH_LOCAL_EXPRESSIONS_ENABLED=%s TORCH_NUM_THREADS=%s "
     "TORCH_NUM_INTEROP_THREADS=%s TTS_PREWARM_ENABLED=%s TTS_PREWARM_ASYNC=%s "
     "TTS_PREWARM_VOICE=%s TTS_PREWARM_STYLE=%s MORPH_ASYNC_INGEST=%s "
-    "MORPH_ASYNC_MAX_PENDING=%s",
+    "MORPH_ASYNC_MAX_PENDING=%s POSTFX_ENABLED=%s POSTFX_TRIM_ENABLED=%s "
+    "POSTFX_TRIM_THRESHOLD_DB=%s POSTFX_TRIM_KEEP_MS=%s POSTFX_FADE_IN_MS=%s "
+    "POSTFX_FADE_OUT_MS=%s POSTFX_CROSSFADE_MS=%s POSTFX_LOUDNESS_ENABLED=%s "
+    "POSTFX_LOUDNESS_TARGET_LUFS=%s POSTFX_LOUDNESS_TRUE_PEAK_DB=%s",
     CONFIG.log_level,
     CONFIG.file_log_level,
     CONFIG.log_dir,
@@ -132,6 +135,20 @@ logger.debug(
     CONFIG.tts_prewarm_style,
     CONFIG.morph_async_ingest,
     CONFIG.morph_async_max_pending,
+    CONFIG.postfx_enabled,
+    CONFIG.postfx_trim_enabled,
+    CONFIG.postfx_trim_threshold_db,
+    CONFIG.postfx_trim_keep_ms,
+    CONFIG.postfx_fade_in_ms,
+    CONFIG.postfx_fade_out_ms,
+    CONFIG.postfx_crossfade_ms,
+    CONFIG.postfx_loudness_enabled,
+    CONFIG.postfx_loudness_target_lufs,
+    CONFIG.postfx_loudness_true_peak_db,
+)
+logger.info(
+    "Audio post-processing is %s",
+    "enabled" if CONFIG.postfx_enabled else "disabled",
 )
 
 

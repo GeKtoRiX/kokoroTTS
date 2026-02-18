@@ -49,6 +49,16 @@ def test_load_config_reads_env_and_sets_duplicate_limits(monkeypatch, tmp_path):
     monkeypatch.setenv("TTS_PREWARM_STYLE", "narrator")
     monkeypatch.setenv("MORPH_ASYNC_INGEST", "0")
     monkeypatch.setenv("MORPH_ASYNC_MAX_PENDING", "17")
+    monkeypatch.setenv("POSTFX_ENABLED", "1")
+    monkeypatch.setenv("POSTFX_TRIM_ENABLED", "0")
+    monkeypatch.setenv("POSTFX_TRIM_THRESHOLD_DB", "-500")  # below min -> clamped
+    monkeypatch.setenv("POSTFX_TRIM_KEEP_MS", "-1")  # below min -> clamped
+    monkeypatch.setenv("POSTFX_FADE_IN_MS", "999999")  # above max -> clamped
+    monkeypatch.setenv("POSTFX_FADE_OUT_MS", "60")
+    monkeypatch.setenv("POSTFX_CROSSFADE_MS", "30")
+    monkeypatch.setenv("POSTFX_LOUDNESS_ENABLED", "0")
+    monkeypatch.setenv("POSTFX_LOUDNESS_TARGET_LUFS", "0")  # above max -> clamped
+    monkeypatch.setenv("POSTFX_LOUDNESS_TRUE_PEAK_DB", "2")  # above max -> clamped
     monkeypatch.setenv("SPACE_ID", "hexgrad/Kokoro-TTS")
 
     config = load_config()
@@ -76,6 +86,16 @@ def test_load_config_reads_env_and_sets_duplicate_limits(monkeypatch, tmp_path):
     assert config.tts_prewarm_style == "narrator"
     assert config.morph_async_ingest is False
     assert config.morph_async_max_pending == 17
+    assert config.postfx_enabled is True
+    assert config.postfx_trim_enabled is False
+    assert config.postfx_trim_threshold_db == -90.0
+    assert config.postfx_trim_keep_ms == 0
+    assert config.postfx_fade_in_ms == 5000
+    assert config.postfx_fade_out_ms == 60
+    assert config.postfx_crossfade_ms == 30
+    assert config.postfx_loudness_enabled is False
+    assert config.postfx_loudness_target_lufs == -5.0
+    assert config.postfx_loudness_true_peak_db == 0.0
     assert config.is_duplicate is False
     assert config.char_limit == 5000
 
@@ -94,3 +114,13 @@ def test_load_config_for_duplicate_space_has_no_char_limit(monkeypatch):
     assert config.tts_prewarm_enabled is True
     assert config.tts_prewarm_async is False
     assert config.morph_async_ingest is False
+    assert config.postfx_enabled is False
+    assert config.postfx_trim_enabled is True
+    assert config.postfx_trim_threshold_db == -42.0
+    assert config.postfx_trim_keep_ms == 25
+    assert config.postfx_fade_in_ms == 12
+    assert config.postfx_fade_out_ms == 40
+    assert config.postfx_crossfade_ms == 25
+    assert config.postfx_loudness_enabled is True
+    assert config.postfx_loudness_target_lufs == -16.0
+    assert config.postfx_loudness_true_peak_db == -1.0

@@ -133,4 +133,7 @@ def test_initialize_app_services_builds_bundle(monkeypatch):
     assert bundle.app == "APP"
     assert calls["model_manager_init"][0] == "hexgrad/Kokoro-82M"
     assert calls["audio_writer_init"][0] == "outputs"
+    postfx_settings = calls["state_init"][1].get("postfx_settings")
+    assert postfx_settings is not None
+    assert postfx_settings.enabled is False
     assert "create_tkinter_app" in calls

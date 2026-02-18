@@ -6,6 +6,7 @@ from typing import Mapping
 
 from ..config import AppConfig
 from ..constants import SAMPLE_RATE
+from ..domain.audio_postfx import AudioPostFxSettings
 from ..domain.expressions import extract_english_expressions
 from ..domain.normalization import TextNormalizer
 from ..integrations.model_manager import ModelManager
@@ -100,6 +101,22 @@ def initialize_app_services(
     )
 
     forward_gpu = build_forward_gpu(model_manager)
+    postfx_settings = AudioPostFxSettings(
+        enabled=bool(getattr(config, "postfx_enabled", False)),
+        trim_enabled=bool(getattr(config, "postfx_trim_enabled", True)),
+        trim_threshold_db=float(getattr(config, "postfx_trim_threshold_db", -42.0)),
+        trim_keep_ms=int(getattr(config, "postfx_trim_keep_ms", 25)),
+        fade_in_ms=int(getattr(config, "postfx_fade_in_ms", 12)),
+        fade_out_ms=int(getattr(config, "postfx_fade_out_ms", 40)),
+        crossfade_ms=int(getattr(config, "postfx_crossfade_ms", 25)),
+        loudness_enabled=bool(getattr(config, "postfx_loudness_enabled", True)),
+        loudness_target_lufs=float(getattr(config, "postfx_loudness_target_lufs", -16.0)),
+        loudness_true_peak_db=float(getattr(config, "postfx_loudness_true_peak_db", -1.0)),
+    )
+    logger.info(
+        "Audio post-processing is %s",
+        "enabled" if postfx_settings.enabled else "disabled",
+    )
     ui_hooks = UiHooks(
         warn=lambda message: logger.warning("UI warning: %s", message),
         info=lambda message: logger.info("UI info: %s", message),
@@ -119,6 +136,7 @@ def initialize_app_services(
         morphology_repository=morphology_repository,
         morphology_async_ingest=config.morph_async_ingest,
         morphology_async_max_pending=config.morph_async_max_pending,
+        postfx_settings=postfx_settings,
     )
     history_repository = HistoryRepository(config.output_dir_abs, logger)
     history_service = HistoryService(

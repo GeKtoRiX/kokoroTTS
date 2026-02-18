@@ -5,6 +5,7 @@ import torch
 
 from kokoro_tts.application.state import KokoroState
 from kokoro_tts.application.ui_hooks import UiHooks
+from kokoro_tts.domain.audio_postfx import AudioPostFxSettings
 from kokoro_tts.domain.normalization import TextNormalizer
 from kokoro_tts.domain.voice import DialogueSegment
 
@@ -19,6 +20,9 @@ class _Logger:
         self.debugs.append(message % args if args else message)
 
     def info(self, message, *args):
+        self.infos.append(message % args if args else message)
+
+    def warning(self, message, *args):
         self.infos.append(message % args if args else message)
 
     def exception(self, message, *args):
@@ -85,8 +89,8 @@ class _AudioWriter:
     def build_output_paths(self, voice, parts_count, output_format):
         return [f"{voice}_part{index}.{output_format}" for index in range(parts_count)]
 
-    def save_audio(self, path, audio, output_format):
-        self.saved.append((path, output_format, int(audio.numel())))
+    def save_audio(self, path, audio, output_format, *, postfx_settings=None):
+        self.saved.append((path, output_format, int(audio.numel()), postfx_settings))
         return path
 
 
@@ -101,7 +105,14 @@ class _MorphRepo:
         self.rows.append((parts, source))
 
 
-def _build_state(*, hooks=None, morph_repo=None, gpu_forward=None, pipeline=None):
+def _build_state(
+    *,
+    hooks=None,
+    morph_repo=None,
+    gpu_forward=None,
+    pipeline=None,
+    postfx_settings=None,
+):
     model_manager = _ModelManager(pipeline=pipeline)
     normalizer = TextNormalizer(char_limit=80, normalize_times=False, normalize_numbers=False)
     audio_writer = _AudioWriter()
@@ -117,6 +128,7 @@ def _build_state(*, hooks=None, morph_repo=None, gpu_forward=None, pipeline=None
         gpu_forward=gpu_forward,
         ui_hooks=hooks,
         morphology_repository=morph_repo,
+        postfx_settings=postfx_settings,
     )
     return state, model_manager, audio_writer, logger
 
@@ -154,6 +166,7 @@ def test_generate_first_saves_outputs_and_persists_morphology():
     assert isinstance(audio_np, np.ndarray)
     assert first_ps
     assert writer.saved
+    assert writer.saved[0][3] is not None
     assert morph.rows and morph.rows[0][1] == "generate_first"
     assert state.last_saved_paths
 
@@ -353,3 +366,94 @@ def test_async_morphology_ingest_enqueue_and_flush():
     state.wait_for_pending_morphology(timeout=2.0)
     state._morph_executor.shutdown(wait=True)
     assert morph.rows
+
+
+def test_generate_first_postfx_trim_and_fade_enabled_no_crash():
+    settings = AudioPostFxSettings(
+        enabled=True,
+        trim_enabled=True,
+        trim_threshold_db=-60.0,
+        trim_keep_ms=0,
+        fade_in_ms=10,
+        fade_out_ms=10,
+        crossfade_ms=0,
+        loudness_enabled=True,
+    )
+    state, _, _, _ = _build_state(postfx_settings=settings)
+    result, _ = state.generate_first(
+        "hello world",
+        save_outputs=False,
+        use_gpu=False,
+        pause_seconds=0.0,
+    )
+    assert result is not None
+
+
+def test_generate_first_crossfade_reduces_length_when_pause_is_zero():
+    baseline_state, _, _, _ = _build_state(
+        postfx_settings=AudioPostFxSettings(
+            enabled=False,
+            trim_enabled=False,
+            fade_in_ms=0,
+            fade_out_ms=0,
+            crossfade_ms=25,
+        )
+    )
+    crossfade_state, _, _, _ = _build_state(
+        postfx_settings=AudioPostFxSettings(
+            enabled=True,
+            trim_enabled=False,
+            fade_in_ms=0,
+            fade_out_ms=0,
+            crossfade_ms=25,
+        )
+    )
+    base_result, _ = baseline_state.generate_first(
+        "hello [style=energetic]world",
+        save_outputs=False,
+        use_gpu=False,
+        pause_seconds=0.0,
+    )
+    cross_result, _ = crossfade_state.generate_first(
+        "hello [style=energetic]world",
+        save_outputs=False,
+        use_gpu=False,
+        pause_seconds=0.0,
+    )
+    assert base_result is not None
+    assert cross_result is not None
+    assert len(cross_result[1]) < len(base_result[1])
+
+
+def test_generate_first_crossfade_not_applied_when_pause_exists():
+    settings_off = AudioPostFxSettings(
+        enabled=False,
+        trim_enabled=False,
+        fade_in_ms=0,
+        fade_out_ms=0,
+        crossfade_ms=25,
+    )
+    settings_on = AudioPostFxSettings(
+        enabled=True,
+        trim_enabled=False,
+        fade_in_ms=0,
+        fade_out_ms=0,
+        crossfade_ms=25,
+    )
+    state_off, _, _, _ = _build_state(postfx_settings=settings_off)
+    state_on, _, _, _ = _build_state(postfx_settings=settings_on)
+    off_result, _ = state_off.generate_first(
+        "hello [style=energetic]world",
+        save_outputs=False,
+        use_gpu=False,
+        pause_seconds=0.1,
+    )
+    on_result, _ = state_on.generate_first(
+        "hello [style=energetic]world",
+        save_outputs=False,
+        use_gpu=False,
+        pause_seconds=0.1,
+    )
+    assert off_result is not None
+    assert on_result is not None
+    assert len(on_result[1]) == len(off_result[1])

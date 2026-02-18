@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .utils import parse_int_env, resolve_path
+from .utils import parse_float_env, parse_int_env, resolve_path
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,16 @@ class AppConfig:
     tts_prewarm_style: str = "neutral"
     morph_async_ingest: bool = False
     morph_async_max_pending: int = 8
+    postfx_enabled: bool = False
+    postfx_trim_enabled: bool = True
+    postfx_trim_threshold_db: float = -42.0
+    postfx_trim_keep_ms: int = 25
+    postfx_fade_in_ms: int = 12
+    postfx_fade_out_ms: int = 40
+    postfx_crossfade_ms: int = 25
+    postfx_loudness_enabled: bool = True
+    postfx_loudness_target_lufs: float = -16.0
+    postfx_loudness_true_peak_db: float = -1.0
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -119,6 +129,51 @@ def load_config() -> AppConfig:
         min_value=1,
         max_value=256,
     )
+    postfx_enabled = _env_flag("POSTFX_ENABLED", "0")
+    postfx_trim_enabled = _env_flag("POSTFX_TRIM_ENABLED", "1")
+    postfx_trim_threshold_db = parse_float_env(
+        "POSTFX_TRIM_THRESHOLD_DB",
+        -42.0,
+        min_value=-90.0,
+        max_value=-1.0,
+    )
+    postfx_trim_keep_ms = parse_int_env(
+        "POSTFX_TRIM_KEEP_MS",
+        25,
+        min_value=0,
+        max_value=2000,
+    )
+    postfx_fade_in_ms = parse_int_env(
+        "POSTFX_FADE_IN_MS",
+        12,
+        min_value=0,
+        max_value=5000,
+    )
+    postfx_fade_out_ms = parse_int_env(
+        "POSTFX_FADE_OUT_MS",
+        40,
+        min_value=0,
+        max_value=5000,
+    )
+    postfx_crossfade_ms = parse_int_env(
+        "POSTFX_CROSSFADE_MS",
+        25,
+        min_value=0,
+        max_value=2000,
+    )
+    postfx_loudness_enabled = _env_flag("POSTFX_LOUDNESS_ENABLED", "1")
+    postfx_loudness_target_lufs = parse_float_env(
+        "POSTFX_LOUDNESS_TARGET_LUFS",
+        -16.0,
+        min_value=-40.0,
+        max_value=-5.0,
+    )
+    postfx_loudness_true_peak_db = parse_float_env(
+        "POSTFX_LOUDNESS_TRUE_PEAK_DB",
+        -1.0,
+        min_value=-9.0,
+        max_value=0.0,
+    )
     return AppConfig(
         log_level=log_level,
         file_log_level=file_log_level,
@@ -149,4 +204,14 @@ def load_config() -> AppConfig:
         tts_prewarm_style=tts_prewarm_style,
         morph_async_ingest=morph_async_ingest,
         morph_async_max_pending=morph_async_max_pending,
+        postfx_enabled=postfx_enabled,
+        postfx_trim_enabled=postfx_trim_enabled,
+        postfx_trim_threshold_db=postfx_trim_threshold_db,
+        postfx_trim_keep_ms=postfx_trim_keep_ms,
+        postfx_fade_in_ms=postfx_fade_in_ms,
+        postfx_fade_out_ms=postfx_fade_out_ms,
+        postfx_crossfade_ms=postfx_crossfade_ms,
+        postfx_loudness_enabled=postfx_loudness_enabled,
+        postfx_loudness_target_lufs=postfx_loudness_target_lufs,
+        postfx_loudness_true_peak_db=postfx_loudness_true_peak_db,
     )

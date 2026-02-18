@@ -10,6 +10,13 @@ from typing import Callable, Generator
 import torch
 
 from ..constants import SAMPLE_RATE
+from ..domain.audio_postfx import (
+    AudioPostFxSettings,
+    apply_fade,
+    crossfade_join,
+    trim_silence,
+)
+from ..domain.normalization import TextNormalizer
 from ..domain.splitting import smart_split, split_parts
 from ..domain.style import PIPELINE_STYLE_PARAM_NAMES, resolve_style_runtime
 from ..domain.voice import (
@@ -21,7 +28,6 @@ from ..domain.voice import (
 from ..integrations.model_manager import ModelManager
 from ..storage.audio_writer import AudioWriter
 from .ui_hooks import UiHooks
-from ..domain.normalization import TextNormalizer
 
 
 class KokoroState:
@@ -40,6 +46,7 @@ class KokoroState:
         morphology_repository=None,
         morphology_async_ingest: bool = False,
         morphology_async_max_pending: int = 8,
+        postfx_settings: AudioPostFxSettings | None = None,
     ) -> None:
         self.model_manager = model_manager
         self.normalizer = normalizer
@@ -60,6 +67,7 @@ class KokoroState:
         self._morph_executor: ThreadPoolExecutor | None = None
         self._pending_morph_futures: list[Future[None]] = []
         self._pending_morph_lock = threading.Lock()
+        self.postfx_settings = postfx_settings or AudioPostFxSettings()
         if self.morphology_repository is not None and self.morphology_async_ingest:
             self._morph_executor = ThreadPoolExecutor(
                 max_workers=1,
@@ -315,6 +323,37 @@ class KokoroState:
             return None
         return pause_tensor.numpy()
 
+    def _postfx_enabled(self) -> bool:
+        return bool(getattr(self.postfx_settings, "enabled", False))
+
+    def _trim_segment_audio(self, audio_tensor: torch.Tensor) -> torch.Tensor:
+        if not self._postfx_enabled():
+            return audio_tensor
+        if not bool(getattr(self.postfx_settings, "trim_enabled", True)):
+            return audio_tensor
+        return trim_silence(
+            audio_tensor,
+            SAMPLE_RATE,
+            float(getattr(self.postfx_settings, "trim_threshold_db", -42.0)),
+            int(getattr(self.postfx_settings, "trim_keep_ms", 25)),
+        )
+
+    def _apply_part_fade(self, audio_tensor: torch.Tensor) -> torch.Tensor:
+        if not self._postfx_enabled():
+            return audio_tensor
+        return apply_fade(
+            audio_tensor,
+            SAMPLE_RATE,
+            int(getattr(self.postfx_settings, "fade_in_ms", 12)),
+            int(getattr(self.postfx_settings, "fade_out_ms", 40)),
+        )
+
+    def _crossfade_samples(self) -> int:
+        if not self._postfx_enabled():
+            return 0
+        crossfade_ms = max(0, int(getattr(self.postfx_settings, "crossfade_ms", 25)))
+        return max(0, int(round(crossfade_ms * SAMPLE_RATE / 1000.0)))
+
     def _generate_audio_for_text(
         self,
         text: str,
@@ -423,7 +462,7 @@ class KokoroState:
             style_preset,
         )
         self.logger.debug(
-            "Generate start: text_len=%s parts=%s voice=%s style=%s speed=%s use_gpu=%s pause_seconds=%s output_format=%s",
+            "Generate start: text_len=%s parts=%s voice=%s style=%s speed=%s use_gpu=%s pause_seconds=%s output_format=%s postfx=%s trim=%s fade_in_ms=%s fade_out_ms=%s crossfade_ms=%s loudness=%s",
             len(text),
             len(parts),
             voice,
@@ -432,6 +471,12 @@ class KokoroState:
             use_gpu,
             pause_seconds,
             output_format,
+            self._postfx_enabled(),
+            bool(getattr(self.postfx_settings, "trim_enabled", True)),
+            int(getattr(self.postfx_settings, "fade_in_ms", 12)),
+            int(getattr(self.postfx_settings, "fade_out_ms", 40)),
+            int(getattr(self.postfx_settings, "crossfade_ms", 25)),
+            bool(getattr(self.postfx_settings, "loudness_enabled", True)),
         )
         self._persist_morphology(parts, source="generate_first")
         default_pause_samples = max(0, int(pause_seconds * SAMPLE_RATE))
@@ -446,8 +491,10 @@ class KokoroState:
         )
         saved_paths: list[str] = []
         for index, segments in enumerate(parts):
-            part_segments: list[torch.Tensor] = []
+            part_audio: torch.Tensor | None = None
             last_segment_pause_seconds = pause_seconds
+            pending_pause_samples: int | None = None
+            crossfade_samples = self._crossfade_samples()
             for segment_index, segment in enumerate(segments):
                 segment_style, segment_speed, segment_pause_seconds = resolve_style_runtime(
                     segment.style_preset,
@@ -466,18 +513,28 @@ class KokoroState:
                 )
                 if audio_tensor is None:
                     continue
+                audio_tensor = self._trim_segment_audio(audio_tensor)
                 if not first_ps and part_ps:
                     first_ps = part_ps
-                part_segments.append(audio_tensor)
+                if part_audio is None:
+                    part_audio = audio_tensor
+                else:
+                    if pending_pause_samples == 0 and crossfade_samples > 0:
+                        part_audio = crossfade_join(part_audio, audio_tensor, crossfade_samples)
+                    else:
+                        if pending_pause_samples:
+                            pause_tensor = self._pause_tensor(pending_pause_samples)
+                            if pause_tensor is not None:
+                                part_audio = torch.cat([part_audio, pause_tensor])
+                        part_audio = torch.cat([part_audio, audio_tensor])
                 last_segment_pause_seconds = segment_pause_seconds
                 if segment_index < len(segments) - 1:
-                    segment_pause_samples = max(0, int(segment_pause_seconds * SAMPLE_RATE))
-                    pause_tensor = self._pause_tensor(segment_pause_samples)
-                    if pause_tensor is not None:
-                        part_segments.append(pause_tensor)
-            if not part_segments:
+                    pending_pause_samples = max(0, int(segment_pause_seconds * SAMPLE_RATE))
+                else:
+                    pending_pause_samples = None
+            if part_audio is None:
                 continue
-            part_audio = torch.cat(part_segments)
+            part_audio = self._apply_part_fade(part_audio)
             if save_outputs:
                 output_path = output_paths[index]
                 try:
@@ -485,6 +542,7 @@ class KokoroState:
                         output_path,
                         part_audio,
                         output_format,
+                        postfx_settings=self.postfx_settings,
                     )
                     saved_paths.append(saved_path)
                 except Exception:

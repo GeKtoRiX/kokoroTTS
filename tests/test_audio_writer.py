@@ -2,9 +2,11 @@ import os
 import wave
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
+from kokoro_tts.domain.audio_postfx import AudioPostFxSettings
 from kokoro_tts.storage.audio_writer import AudioWriter
 
 
@@ -92,3 +94,76 @@ def test_audio_writer_non_wav_without_ffmpeg_falls_back_to_wav(tmp_path):
     assert resolved == "wav"
     assert output.endswith(".wav")
     assert os.path.isfile(output)
+
+
+def test_audio_writer_loudnorm_runs_when_enabled(tmp_path, monkeypatch):
+    logger = _Logger()
+    writer = AudioWriter(str(tmp_path), sample_rate=24000, logger=logger)
+    writer.ffmpeg_path = "ffmpeg"
+    writer.can_convert = True
+    calls = []
+
+    def _run(cmd, check, stdout, stderr):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("kokoro_tts.storage.audio_writer.subprocess.run", _run)
+    settings = AudioPostFxSettings(
+        enabled=True,
+        loudness_enabled=True,
+        loudness_target_lufs=-16.0,
+        loudness_true_peak_db=-1.0,
+    )
+    output = writer.save_audio(
+        str(tmp_path / "loud.wav"),
+        torch.tensor([0.1, -0.1], dtype=torch.float32),
+        output_format="wav",
+        postfx_settings=settings,
+    )
+
+    assert output.endswith(".wav")
+    assert calls
+    assert any("-af" in cmd for cmd in calls)
+    assert any("loudnorm=I=-16.0:TP=-1.0:LRA=11" in cmd for cmd in calls)
+
+
+def test_audio_writer_loudnorm_skips_without_ffmpeg(tmp_path, monkeypatch):
+    logger = _Logger()
+    writer = AudioWriter(str(tmp_path), sample_rate=24000, logger=logger)
+    writer.ffmpeg_path = None
+    writer.can_convert = False
+    monkeypatch.setattr("kokoro_tts.storage.audio_writer.shutil.which", lambda _name: None)
+    settings = AudioPostFxSettings(enabled=True, loudness_enabled=True)
+    output = writer.save_audio(
+        str(tmp_path / "noffmpeg.wav"),
+        torch.tensor([0.1, -0.1], dtype=torch.float32),
+        output_format="wav",
+        postfx_settings=settings,
+    )
+
+    assert output.endswith(".wav")
+    assert os.path.isfile(output)
+    assert any("Loudness normalization skipped" in message for message in logger.warnings)
+
+
+def test_audio_writer_loudnorm_failure_keeps_output(tmp_path, monkeypatch):
+    logger = _Logger()
+    writer = AudioWriter(str(tmp_path), sample_rate=24000, logger=logger)
+    writer.ffmpeg_path = "ffmpeg"
+    writer.can_convert = True
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("loudnorm failed")
+
+    monkeypatch.setattr("kokoro_tts.storage.audio_writer.subprocess.run", _boom)
+    settings = AudioPostFxSettings(enabled=True, loudness_enabled=True)
+    output = writer.save_audio(
+        str(tmp_path / "fail.wav"),
+        torch.tensor([0.1, -0.1], dtype=torch.float32),
+        output_format="wav",
+        postfx_settings=settings,
+    )
+
+    assert output.endswith(".wav")
+    assert os.path.isfile(output)
+    assert logger.exceptions

@@ -13,6 +13,7 @@ from datetime import datetime
 import torch
 
 from ..constants import OUTPUT_FORMATS
+from ..domain.audio_postfx import AudioPostFxSettings
 
 
 class AudioWriter:
@@ -84,12 +85,83 @@ class AudioWriter:
             stderr=subprocess.PIPE,
         )
 
-    def save_audio(self, path: str, audio_tensor, output_format: str) -> str:
+    def _apply_loudness_normalization(
+        self,
+        path: str,
+        postfx_settings: AudioPostFxSettings | None,
+    ) -> str:
+        if postfx_settings is None:
+            self.logger.debug("Loudness normalization skipped: postfx settings are not provided")
+            return path
+        if not bool(postfx_settings.enabled):
+            self.logger.debug("Loudness normalization skipped: postfx is disabled")
+            return path
+        if not bool(postfx_settings.loudness_enabled):
+            self.logger.debug("Loudness normalization skipped: loudness step is disabled")
+            return path
+
+        ffmpeg = self.ffmpeg_path or shutil.which("ffmpeg")
+        if not ffmpeg:
+            self.logger.warning("Loudness normalization skipped: ffmpeg is not available")
+            return path
+
+        target_lufs = float(postfx_settings.loudness_target_lufs)
+        true_peak = float(postfx_settings.loudness_true_peak_db)
+        filter_expr = f"loudnorm=I={target_lufs}:TP={true_peak}:LRA=11"
+        output_dir = os.path.dirname(path) or self.output_dir
+        _, ext = os.path.splitext(path)
+        tmp_handle = tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=ext or ".wav",
+            dir=output_dir,
+        )
+        tmp_path = tmp_handle.name
+        tmp_handle.close()
+        try:
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    path,
+                    "-af",
+                    filter_expr,
+                    tmp_path,
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            os.replace(tmp_path, path)
+            self.logger.debug(
+                "Loudness normalization complete: target_lufs=%s true_peak=%s path=%s",
+                target_lufs,
+                true_peak,
+                path,
+            )
+        except Exception:
+            self.logger.exception("Loudness normalization failed: %s", path)
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        return path
+
+    def save_audio(
+        self,
+        path: str,
+        audio_tensor,
+        output_format: str,
+        *,
+        postfx_settings: AudioPostFxSettings | None = None,
+    ) -> str:
         output_format = self.resolve_output_format(output_format)
         path = self._ensure_extension(path, output_format)
         if output_format == "wav":
             self.save_wav(path, audio_tensor)
-            return path
+            return self._apply_loudness_normalization(path, postfx_settings)
         tmp_handle = tempfile.NamedTemporaryFile(
             delete=False,
             suffix=".wav",
@@ -107,9 +179,9 @@ class AudioWriter:
             )
             fallback_path = os.path.splitext(path)[0] + ".wav"
             os.replace(tmp_path, fallback_path)
-            return fallback_path
+            return self._apply_loudness_normalization(fallback_path, postfx_settings)
         os.remove(tmp_path)
-        return path
+        return self._apply_loudness_normalization(path, postfx_settings)
 
     def build_output_paths(
         self,

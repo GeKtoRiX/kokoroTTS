@@ -9,11 +9,13 @@ Local Tkinter desktop app for `hexgrad/Kokoro-82M` with:
 - text normalization (time/number)
 - style presets (`neutral`, `narrator`, `energetic`)
 - output formats `wav/mp3/ogg` (ffmpeg fallback handling)
+- runtime mode switch: `Default` / `TTS + Morphology`
+- optional audio post-processing for `generate_first` (`trim`, `fade`, `crossfade`, `loudnorm`)
 - morphology SQLite read-only preview tab
 
 ## Known issues
 
-- `Stream`: in some sessions, voice can stick to the first selected voice even after changing it in UI. This bug is currently unresolved.
+- No known critical issues as of February 18, 2026.
 
 ## Isolation rule
 
@@ -33,6 +35,33 @@ powershell -ExecutionPolicy Bypass -File scripts\bootstrap_local.ps1
 ```
 
 First run may download model weights and voices from Hugging Face.
+
+By default, UI starts in `Default` runtime mode (TTS-only behavior).
+Switch to `TTS + Morphology` in Advanced settings to enable morphology ingest/DB views.
+
+## Programmatic usage
+
+You can use the local API wrappers from `app.py`:
+
+```python
+import app
+
+# generate and save outputs (returns ((sample_rate, np_audio), token_string))
+result, tokens = app.generate_first(
+    text="Hello from Kokoro.",
+    voice="af_heart",
+    use_gpu=False,
+    output_format="wav",
+    style_preset="neutral",
+)
+
+# tokenize only
+token_text = app.tokenize_first("Hello from Kokoro.", voice="af_heart")
+
+# streaming generator (sample_rate, np_chunk)
+for sample_rate, chunk in app.generate_all("Streaming text", voice="af_heart", use_gpu=False):
+    pass
+```
 
 ## What bootstrap does
 
@@ -106,6 +135,9 @@ Create/edit `.env` (or start from `.env.example`):
 - `FFMPEG_BINARY`, `FFPROBE_BINARY`
 - `ESPEAK_DATA_PATH`, `PHONEMIZER_ESPEAK_LIBRARY`
 - `KOKORO_REPO_ID` (default `hexgrad/Kokoro-82M`)
+- `SPACE_ID` (Hugging Face Spaces context, affects duplicate-mode behavior)
+- `HF_TOKEN` (optional Hugging Face token for hub rate-limit mitigation)
+- `KOKORO_SKIP_APP_INIT` (test/diagnostic mode; skips full app initialization)
 - `OUTPUT_DIR` (default `outputs`)
 - `MAX_CHUNK_CHARS` (default `500`)
 - `HISTORY_LIMIT` (default `5`)
@@ -118,9 +150,13 @@ Create/edit `.env` (or start from `.env.example`):
 - `TORCH_NUM_THREADS`, `TORCH_NUM_INTEROP_THREADS` (`0` keeps torch defaults)
 - `TTS_PREWARM_ENABLED`, `TTS_PREWARM_ASYNC`, `TTS_PREWARM_VOICE`, `TTS_PREWARM_STYLE`
 - `MORPH_DB_ENABLED`, `MORPH_DB_PATH`, `MORPH_DB_TABLE_PREFIX`
-- `MORPH_LOCAL_EXPRESSIONS_ENABLED` (`0` by default; set `1` to re-enable local phrasal/idiom extractor)
+- `MORPH_LOCAL_EXPRESSIONS_ENABLED` (`0` by default; controls baseline local phrasal/idiom extractor setup)
 - `MORPH_ASYNC_INGEST` (`0` by default; optional background morphology DB writes)
 - `MORPH_ASYNC_MAX_PENDING` (max pending async morphology tasks before sync fallback)
+- `POSTFX_ENABLED` (`0` by default; enables generate-time audio post-processing)
+- `POSTFX_TRIM_ENABLED=1`, `POSTFX_TRIM_THRESHOLD_DB=-42`, `POSTFX_TRIM_KEEP_MS=25`
+- `POSTFX_FADE_IN_MS=12`, `POSTFX_FADE_OUT_MS=40`, `POSTFX_CROSSFADE_MS=25`
+- `POSTFX_LOUDNESS_ENABLED=1`, `POSTFX_LOUDNESS_TARGET_LUFS=-16`, `POSTFX_LOUDNESS_TRUE_PEAK_DB=-1.0`
 - `PRONUNCIATION_RULES_PATH` (default `data/pronunciation_rules.json`)
 - `WORDNET_DATA_DIR`, `WORDNET_AUTO_DOWNLOAD`, `SPACY_EN_MODEL_AUTO_DOWNLOAD`
 - `MORPH_SPACY_MODELS` (comma-separated spaCy model priority, default tries `trf,lg,md,sm`)
@@ -131,7 +167,15 @@ Create/edit `.env` (or start from `.env.example`):
 - `MORPH_PYWSD_AUTO_DOWNLOAD` (`1` by default; downloads required NLTK resources for PyWSD)
 - `SPACY_EN_AUTO_DOWNLOAD_MODELS` (comma-separated, default `en_core_web_sm`)
 
-When `MORPH_DB_ENABLED=1`, each `generate` run writes English token analysis into SQLite:
+Audio post-processing scope (current phase):
+- applied only in `generate_first` pipeline
+- stream path (`generate_all`) is unchanged
+- `trim`/`fade`/`crossfade` affect generated waveform in `generate_first`
+- loudness normalization uses ffmpeg `loudnorm` on saved files; if ffmpeg is unavailable or fails, output is kept without loudness normalization
+- in-memory return from `generate_first` is not loudness-normalized
+
+When `MORPH_DB_ENABLED=1` and TTS-only mode is OFF (`TTS + Morphology`), `generate` and `stream`
+runs write English token analysis into SQLite:
 - `<prefix>lexemes` (deduplicated by key, insert-ignore only)
 - `<prefix>token_occurrences` (token occurrences, insert-ignore only)
 - `<prefix>expressions` (phrasal verbs and idioms)
@@ -160,7 +204,7 @@ UI includes a `Runtime mode` accordion with a single mode selector:
 Mode behavior:
 - `Default` is plain TTS: morphology ingest/DB writes are disabled.
 - `TTS + Morphology` keeps morphology ingest/DB writes enabled.
-- Tab visibility follows mode:
+- UI tab visibility follows mode:
 - `Default`: hides `Morphology DB`.
 - `TTS + Morphology`: shows `Morphology DB`.
 
