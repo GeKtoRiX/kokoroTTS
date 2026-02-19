@@ -9,6 +9,7 @@ from kokoro_tts.domain.text_utils import (
 from kokoro_tts.domain.voice import (
     DialogueSegment,
     DEFAULT_VOICE,
+    available_language_codes,
     default_voice_for_lang,
     get_voice_choices,
     limit_dialogue_parts,
@@ -20,6 +21,7 @@ from kokoro_tts.domain.voice import (
     normalize_voice_tag,
     parse_dialogue_segments,
     parse_voice_segments,
+    register_runtime_voices,
     resolve_voice,
     summarize_dialogue_voice,
     summarize_voice,
@@ -139,3 +141,42 @@ def test_style_presets_normalize_and_adjust_runtime():
     assert preset == "energetic"
     assert round(speed, 2) == 1.12
     assert round(pause, 2) == 0.8
+
+
+def test_runtime_registration_adds_russian_language_and_voice():
+    from kokoro_tts.domain import voice as voice_mod
+
+    labels_snapshot = dict(voice_mod.LANGUAGE_LABELS)
+    aliases_snapshot = dict(voice_mod.LANGUAGE_ALIASES)
+    choices_snapshot = list(voice_mod.LANGUAGE_CHOICES)
+    voice_items_snapshot = list(voice_mod.VOICE_ITEMS)
+    choice_map_snapshot = dict(voice_mod.CHOICES)
+    valid_snapshot = set(voice_mod.VALID_VOICE_IDS)
+    options_snapshot = {key: list(value) for key, value in voice_mod.VOICE_OPTIONS_BY_LANG.items()}
+    try:
+        registered = register_runtime_voices(
+            "r",
+            voices=[("Russian Demo", "r_demo")],
+            language_label="Russian",
+            aliases=("ru", "ru-ru"),
+        )
+        assert "r_demo" in registered
+        assert normalize_lang_code("ru") == "r"
+        ru_choices = get_voice_choices("r")
+        assert ("Russian Demo", "r_demo") in ru_choices
+        assert "r" in available_language_codes()
+        mixed = normalize_voice_input("r_demo", voice_mix=["r_demo", "af_heart"])
+        assert mixed == "r_demo"
+    finally:
+        voice_mod.LANGUAGE_LABELS.clear()
+        voice_mod.LANGUAGE_LABELS.update(labels_snapshot)
+        voice_mod.LANGUAGE_ALIASES.clear()
+        voice_mod.LANGUAGE_ALIASES.update(aliases_snapshot)
+        voice_mod.LANGUAGE_CHOICES[:] = choices_snapshot
+        voice_mod.VOICE_ITEMS[:] = voice_items_snapshot
+        voice_mod.CHOICES.clear()
+        voice_mod.CHOICES.update(choice_map_snapshot)
+        voice_mod.VALID_VOICE_IDS.clear()
+        voice_mod.VALID_VOICE_IDS.update(valid_snapshot)
+        voice_mod.VOICE_OPTIONS_BY_LANG.clear()
+        voice_mod.VOICE_OPTIONS_BY_LANG.update(options_snapshot)

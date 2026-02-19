@@ -60,11 +60,13 @@ from kokoro_tts.domain.voice import (
     normalize_voice_input,
     normalize_voice_tag,
     parse_voice_segments,
+    register_runtime_voices,
     resolve_voice,
     summarize_voice,
 )
 from kokoro_tts.integrations.ffmpeg import configure_ffmpeg
 from kokoro_tts.integrations.model_manager import ModelManager
+from kokoro_tts.integrations.silero_manager import SileroManager
 from kokoro_tts.integrations.spaces_gpu import build_forward_gpu
 from kokoro_tts.logging_config import setup_logging
 from kokoro_tts.storage.audio_writer import AudioWriter
@@ -110,7 +112,8 @@ logger.debug(
     "MORPH_ASYNC_MAX_PENDING=%s POSTFX_ENABLED=%s POSTFX_TRIM_ENABLED=%s "
     "POSTFX_TRIM_THRESHOLD_DB=%s POSTFX_TRIM_KEEP_MS=%s POSTFX_FADE_IN_MS=%s "
     "POSTFX_FADE_OUT_MS=%s POSTFX_CROSSFADE_MS=%s POSTFX_LOUDNESS_ENABLED=%s "
-    "POSTFX_LOUDNESS_TARGET_LUFS=%s POSTFX_LOUDNESS_TRUE_PEAK_DB=%s",
+    "POSTFX_LOUDNESS_TARGET_LUFS=%s POSTFX_LOUDNESS_TRUE_PEAK_DB=%s "
+    "RU_TTS_ENABLED=%s RU_TTS_MODEL_ID=%s RU_TTS_CACHE_DIR=%s RU_TTS_CPU_ONLY=%s",
     CONFIG.log_level,
     CONFIG.file_log_level,
     CONFIG.log_dir,
@@ -145,6 +148,10 @@ logger.debug(
     CONFIG.postfx_loudness_enabled,
     CONFIG.postfx_loudness_target_lufs,
     CONFIG.postfx_loudness_true_peak_db,
+    CONFIG.ru_tts_enabled,
+    CONFIG.ru_tts_model_id,
+    CONFIG.ru_tts_cache_dir,
+    CONFIG.ru_tts_cpu_only,
 )
 logger.info(
     "Audio post-processing is %s",
@@ -200,6 +207,45 @@ DEFAULT_OUTPUT_FORMAT = (
     else "wav"
 )
 
+
+def _initialize_russian_backend():
+    if SKIP_APP_INIT:
+        logger.info("Skipping Russian Silero initialization because KOKORO_SKIP_APP_INIT is enabled")
+        return None
+    if not CONFIG.ru_tts_enabled:
+        logger.info("Russian Silero backend is disabled by RU_TTS_ENABLED")
+        return None
+    try:
+        manager = SileroManager(
+            model_id=CONFIG.ru_tts_model_id,
+            cache_dir=CONFIG.ru_tts_cache_dir,
+            cpu_only=CONFIG.ru_tts_cpu_only,
+            logger=logger,
+            sample_rate=SAMPLE_RATE,
+        )
+        voice_items = manager.discover_voice_items()
+        if not voice_items:
+            logger.warning("Russian Silero backend initialized but no voices were discovered")
+            return None
+        registered = register_runtime_voices(
+            "r",
+            voices=voice_items,
+            language_label="Russian",
+            aliases=("ru", "ru-ru", "ru_ru"),
+        )
+        logger.info(
+            "Russian Silero backend enabled: model_id=%s voices=%s",
+            CONFIG.ru_tts_model_id,
+            len(registered),
+        )
+        return manager
+    except Exception:
+        logger.exception("Failed to initialize Russian Silero backend; continuing without ru support")
+        return None
+
+
+_RUNTIME_SILERO_MANAGER = _initialize_russian_backend()
+
 logger.info("Voices available: %s (lazy loading)", len(CHOICES))
 
 APP_CONTEXT = AppContext(
@@ -210,6 +256,7 @@ APP_CONTEXT = AppContext(
     tts_only_mode=_env_flag("TTS_ONLY_MODE"),
     pronunciation_rules_path=PRONUNCIATION_RULES_PATH,
     default_output_format=DEFAULT_OUTPUT_FORMAT,
+    silero_manager=_RUNTIME_SILERO_MANAGER,
 )
 
 # Legacy compatibility aliases; runtime logic is context-backed.
@@ -221,6 +268,7 @@ HISTORY_SERVICE = APP_CONTEXT.history_service
 MORPHOLOGY_REPOSITORY = APP_CONTEXT.morphology_repository
 PRONUNCIATION_REPOSITORY = APP_CONTEXT.pronunciation_repository
 APP_STATE = APP_CONTEXT.app_state
+SILERO_MANAGER = APP_CONTEXT.silero_manager
 app = APP_CONTEXT.app
 TTS_ONLY_MODE = APP_CONTEXT.tts_only_mode
 MORPH_DEFAULT_EXPRESSION_EXTRACTOR = APP_CONTEXT.morph_default_expression_extractor
@@ -266,6 +314,10 @@ def _current_app_state():
     return _legacy_or_context(APP_STATE, APP_CONTEXT.app_state)
 
 
+def _current_silero_manager():
+    return _legacy_or_context(SILERO_MANAGER, APP_CONTEXT.silero_manager)
+
+
 def _current_desktop_app():
     return _legacy_or_context(app, APP_CONTEXT.app)
 
@@ -286,6 +338,7 @@ def _sync_legacy_aliases_from_context() -> None:
     global MORPHOLOGY_REPOSITORY
     global PRONUNCIATION_REPOSITORY
     global APP_STATE
+    global SILERO_MANAGER
     global app
     global MORPH_DEFAULT_EXPRESSION_EXTRACTOR
 
@@ -297,6 +350,7 @@ def _sync_legacy_aliases_from_context() -> None:
     MORPHOLOGY_REPOSITORY = APP_CONTEXT.morphology_repository
     PRONUNCIATION_REPOSITORY = APP_CONTEXT.pronunciation_repository
     APP_STATE = APP_CONTEXT.app_state
+    SILERO_MANAGER = APP_CONTEXT.silero_manager
     app = APP_CONTEXT.app
     MORPH_DEFAULT_EXPRESSION_EXTRACTOR = APP_CONTEXT.morph_default_expression_extractor
 
@@ -734,6 +788,7 @@ if not SKIP_APP_INIT:
         set_tts_only_mode=set_tts_only_mode,
         tts_only_mode_default=TTS_ONLY_MODE,
         choices=CHOICES,
+        silero_manager=_current_silero_manager(),
     )
     APP_CONTEXT.bind_services(services)
     APP_CONTEXT.tts_port = LocalKokoroApi(

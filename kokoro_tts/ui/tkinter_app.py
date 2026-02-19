@@ -23,6 +23,7 @@ from ..domain.style import DEFAULT_STYLE_PRESET, STYLE_PRESET_CHOICES
 from ..domain.voice import (
     DEFAULT_VOICE,
     LANGUAGE_LABELS,
+    available_language_codes,
     default_voice_for_lang,
     get_voice_choices,
     normalize_lang_code,
@@ -190,7 +191,9 @@ class TkinterDesktopApp(DesktopApp):
         self.default_voice = default_voice_for_lang(self.default_lang)
         self.current_voice_choices = get_voice_choices(self.default_lang)
         self.current_voice_ids = [voice_id for _, voice_id in self.current_voice_choices]
-        self.language_order = ["a", "b", "e", "f", "h", "i", "j", "p", "z"]
+        self.language_order = available_language_codes()
+        if not self.language_order:
+            self.language_order = [self.default_lang]
         self.language_display_values = [
             f"{LANGUAGE_LABELS.get(code, code)} ({code})" for code in self.language_order
         ]

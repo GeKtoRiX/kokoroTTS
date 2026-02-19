@@ -144,6 +144,30 @@ for lang, (voice, text) in multi_samples.items():
         use_gpu=False,
     )
 
+ru_enabled = os.getenv("RU_TTS_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+if ru_enabled:
+    try:
+        from kokoro_tts.domain.voice import get_voice_choices
+
+        ru_choices = get_voice_choices("r")
+        if ru_choices:
+            ru_voice = ru_choices[0][1]
+            ru_text = "\u041f\u0440\u0438\u0432\u0435\u0442, \u044d\u0442\u043e smoke-\u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430."
+            assert_generate(
+                "lang_r",
+                text=ru_text,
+                voice=ru_voice,
+                use_gpu=False,
+            )
+            ru_tokens = app.tokenize_first(ru_text, voice=ru_voice)
+            assert ru_tokens == "[tokenization unavailable for silero]"
+        else:
+            print("SMOKE_WARN: RU_TTS_ENABLED is on but no Russian voices were registered.")
+    except Exception as exc:
+        raise AssertionError(f"lang_r smoke failed: {exc}") from exc
+else:
+    print("SMOKE_SKIP: RU_TTS_ENABLED is disabled.")
+
 print("SMOKE_OK")
 '@ | & $venvPython -
 

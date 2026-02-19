@@ -59,6 +59,10 @@ def test_load_config_reads_env_and_sets_duplicate_limits(monkeypatch, tmp_path):
     monkeypatch.setenv("POSTFX_LOUDNESS_ENABLED", "0")
     monkeypatch.setenv("POSTFX_LOUDNESS_TARGET_LUFS", "0")  # above max -> clamped
     monkeypatch.setenv("POSTFX_LOUDNESS_TRUE_PEAK_DB", "2")  # above max -> clamped
+    monkeypatch.setenv("RU_TTS_ENABLED", "1")
+    monkeypatch.setenv("RU_TTS_MODEL_ID", "v5_cis_base")
+    monkeypatch.setenv("RU_TTS_CACHE_DIR", str(tmp_path / "cache" / "torch"))
+    monkeypatch.setenv("RU_TTS_CPU_ONLY", "1")
     monkeypatch.setenv("SPACE_ID", "hexgrad/Kokoro-TTS")
 
     config = load_config()
@@ -96,6 +100,10 @@ def test_load_config_reads_env_and_sets_duplicate_limits(monkeypatch, tmp_path):
     assert config.postfx_loudness_enabled is False
     assert config.postfx_loudness_target_lufs == -5.0
     assert config.postfx_loudness_true_peak_db == 0.0
+    assert config.ru_tts_enabled is True
+    assert config.ru_tts_model_id == "v5_cis_base"
+    assert config.ru_tts_cache_dir == str(tmp_path / "cache" / "torch")
+    assert config.ru_tts_cpu_only is True
     assert config.is_duplicate is False
     assert config.char_limit == 5000
 
@@ -124,3 +132,6 @@ def test_load_config_for_duplicate_space_has_no_char_limit(monkeypatch):
     assert config.postfx_loudness_enabled is True
     assert config.postfx_loudness_target_lufs == -16.0
     assert config.postfx_loudness_true_peak_db == -1.0
+    assert config.ru_tts_enabled is True
+    assert config.ru_tts_model_id == "v5_cis_base"
+    assert config.ru_tts_cpu_only is True

@@ -55,6 +55,10 @@ def _build_config(tmp_path: Path, *, is_duplicate: bool) -> AppConfig:
         space_id="" if is_duplicate else "hexgrad/Kokoro-82M",
         is_duplicate=is_duplicate,
         char_limit=None if is_duplicate else 5000,
+        ru_tts_enabled=False,
+        ru_tts_model_id="v5_cis_base",
+        ru_tts_cache_dir=str(tmp_path / "cache" / "torch"),
+        ru_tts_cpu_only=True,
     )
 
 
@@ -280,6 +284,7 @@ def test_app_module_reload_init_path_and_main_guard(monkeypatch, tmp_path):
 
     services = SimpleNamespace(
         model_manager=object(),
+        silero_manager=None,
         text_normalizer=object(),
         audio_writer=object(),
         morphology_repository=SimpleNamespace(expression_extractor="default"),

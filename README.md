@@ -4,7 +4,7 @@ Local Tkinter desktop app for `hexgrad/Kokoro-82M` with:
 - generate + stream modes
 - voice mix and inline dialogue tags
 - persistent pronunciation dictionary (JSON rules by language)
-- multilingual voices (9 languages)
+- multilingual voices (Kokoro 9 languages + optional Russian Silero backend)
 - history panel + file cleanup
 - text normalization (time/number)
 - style presets (`neutral`, `narrator`, `energetic`)
@@ -82,8 +82,8 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_full.ps1
 .\.venv\Scripts\python.exe scripts\check_english_lexemes.py --text "Look up the words, then run the tests." --json
 ```
 
-- `doctor.ps1` verifies `.venv`, package imports, tool paths, and `KPipeline` init for `a,b,e,f,h,i,j,p,z`.
-- `smoke_full.ps1` runs runtime checks for generate/stream/dialogue/mix/split/output formats/multilingual voices.
+- `doctor.ps1` verifies `.venv`, package imports, tool paths, and `KPipeline` init for `a,b,e,f,h,i,j,p,z`; it also validates Russian Silero when `RU_TTS_ENABLED=1`.
+- `smoke_full.ps1` runs runtime checks for generate/stream/dialogue/mix/split/output formats/multilingual voices and conditionally checks Russian Silero.
 - `check_english_lexemes.py` performs a real lexeme split smoke check for English text.
 
 ## Maintenance scripts (.bat)
@@ -149,6 +149,10 @@ Create/edit `.env` (or start from `.env.example`):
 - `LOG_EVERY_N_SEGMENTS`
 - `TORCH_NUM_THREADS`, `TORCH_NUM_INTEROP_THREADS` (`0` keeps torch defaults)
 - `TTS_PREWARM_ENABLED`, `TTS_PREWARM_ASYNC`, `TTS_PREWARM_VOICE`, `TTS_PREWARM_STYLE`
+- `RU_TTS_ENABLED` (`1` enables optional Russian Silero backend)
+- `RU_TTS_MODEL_ID` (default `v5_cis_base`)
+- `RU_TTS_CACHE_DIR` (default `data/cache/torch`; used as `TORCH_HOME`)
+- `RU_TTS_CPU_ONLY` (`1` keeps Russian generation CPU-first)
 - `MORPH_DB_ENABLED`, `MORPH_DB_PATH`, `MORPH_DB_TABLE_PREFIX`
 - `MORPH_LOCAL_EXPRESSIONS_ENABLED` (`0` by default; controls baseline local phrasal/idiom extractor setup)
 - `MORPH_ASYNC_INGEST` (`0` by default; optional background morphology DB writes)
@@ -244,8 +248,22 @@ The app exposes the full Kokoro v1.0 voice set from `VOICES.md`:
 - `j` Japanese
 - `p` Brazilian Portuguese
 - `z` Mandarin Chinese
+- `r` Russian (optional, registered at runtime when Silero initializes successfully)
 
 UI includes a language selector that filters available voices. Inline `[voice=...]` tags still work per segment.
+
+## Russian backend (Silero)
+
+Russian support is provided via an optional hybrid backend:
+- Kokoro remains the default engine for `a,b,e,f,h,i,j,p,z`.
+- Silero serves `r_*` voices (auto-discovered speakers from the selected Silero model).
+
+Current Russian behavior:
+- startup registration is controlled by `RU_TTS_ENABLED`
+- model is selected by `RU_TTS_MODEL_ID` (default `v5_cis_base`)
+- model cache path is controlled by `RU_TTS_CACHE_DIR`
+- runtime is CPU-first (`RU_TTS_CPU_ONLY=1`)
+- `tokenize_first(..., voice="r_*")` returns `[tokenization unavailable for silero]`
 
 ## Style presets
 
@@ -274,3 +292,5 @@ Then recreate `.venv` with Python 3.12 and continue using project-local package 
 - `https://github.com/hexgrad/kokoro`
 - `https://huggingface.co/spaces/hexgrad/Kokoro-TTS/tree/main`
 - `https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md`
+- `https://github.com/snakers4/silero-models`
+- `https://pypi.org/project/silero/`

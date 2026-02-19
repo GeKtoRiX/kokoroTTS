@@ -25,6 +25,7 @@ from .ui_hooks import UiHooks
 @dataclass(frozen=True)
 class AppServices:
     model_manager: ModelManager
+    silero_manager: object | None
     text_normalizer: TextNormalizer
     audio_writer: AudioWriter
     morphology_repository: MorphologyRepository
@@ -54,6 +55,7 @@ def initialize_app_services(
     set_tts_only_mode=None,
     tts_only_mode_default: bool = False,
     choices: Mapping[str, str],
+    silero_manager=None,
 ) -> AppServices:
     """Construct all runtime services and return a typed service bundle."""
     pronunciation_repository = PronunciationRepository(
@@ -137,6 +139,7 @@ def initialize_app_services(
         morphology_async_ingest=config.morph_async_ingest,
         morphology_async_max_pending=config.morph_async_max_pending,
         postfx_settings=postfx_settings,
+        silero_manager=silero_manager,
     )
     history_repository = HistoryRepository(config.output_dir_abs, logger)
     history_service = HistoryService(
@@ -168,6 +171,7 @@ def initialize_app_services(
 
     return AppServices(
         model_manager=model_manager,
+        silero_manager=silero_manager,
         text_normalizer=text_normalizer,
         audio_writer=audio_writer,
         morphology_repository=morphology_repository,

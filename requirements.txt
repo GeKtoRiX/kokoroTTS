@@ -1,4 +1,5 @@
 kokoro==0.9.4
+silero==0.5.5
 torch==2.10.0
 misaki[ja,zh]>=0.9.4
 setuptools<81

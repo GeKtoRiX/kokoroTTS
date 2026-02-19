@@ -58,6 +58,10 @@ def _build_config(tmp_path: Path, *, history_limit: int, morph_enabled: bool, sp
         space_id=space_id,
         is_duplicate=not space_id.startswith("hexgrad/"),
         char_limit=None if not space_id.startswith("hexgrad/") else 5000,
+        ru_tts_enabled=False,
+        ru_tts_model_id="v5_cis_base",
+        ru_tts_cache_dir=str(tmp_path / "cache" / "torch"),
+        ru_tts_cpu_only=True,
     )
 
 

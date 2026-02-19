@@ -32,6 +32,7 @@ class AppContext:
     pronunciation_repository: Any = None
     app_state: Any = None
     app: Any = None
+    silero_manager: Any = None
     morph_default_expression_extractor: Any = None
     tts_port: KokoroTtsPort | None = None
 
@@ -45,6 +46,7 @@ class AppContext:
         self.history_repository = services.history_repository
         self.history_service = services.history_service
         self.app = services.app
+        self.silero_manager = services.silero_manager
         self.morph_default_expression_extractor = getattr(
             services.morphology_repository,
             "expression_extractor",

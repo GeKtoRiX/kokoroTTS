@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import logging
 import re
+from typing import Iterable
 
 from .style import DEFAULT_STYLE_PRESET, STYLE_PRESETS, normalize_style_preset
 
@@ -19,6 +20,7 @@ DIALOGUE_TAG_RE = re.compile(
 )
 
 DEFAULT_VOICE = "af_heart"
+BASE_LANGUAGE_ORDER: list[str] = ["a", "b", "e", "f", "h", "i", "j", "p", "z"]
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,104 @@ VALID_VOICE_IDS = set(CHOICES.values())
 VOICE_OPTIONS_BY_LANG: dict[str, list[tuple[str, str]]] = {code: [] for code in LANGUAGE_LABELS}
 for label, voice_id in VOICE_ITEMS:
     VOICE_OPTIONS_BY_LANG.setdefault(voice_id[0], []).append((label, voice_id))
+
+
+def _normalized_runtime_lang_code(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    return raw[:1]
+
+
+def _language_choice_label(lang_code: str) -> str:
+    return f"{LANGUAGE_LABELS.get(lang_code, lang_code)} ({lang_code})"
+
+
+def _upsert_language_choice(lang_code: str) -> None:
+    if not lang_code:
+        return
+    label = _language_choice_label(lang_code)
+    for index, (_old_label, old_code) in enumerate(LANGUAGE_CHOICES):
+        if old_code == lang_code:
+            LANGUAGE_CHOICES[index] = (label, lang_code)
+            return
+    LANGUAGE_CHOICES.append((label, lang_code))
+
+
+def available_language_codes() -> list[str]:
+    ordered: list[str] = []
+    for code in BASE_LANGUAGE_ORDER:
+        if code in LANGUAGE_LABELS and code not in ordered:
+            ordered.append(code)
+    for code in LANGUAGE_LABELS:
+        if code not in ordered:
+            ordered.append(code)
+    return ordered
+
+
+def register_runtime_language(
+    lang_code: str,
+    *,
+    label: str,
+    aliases: Iterable[str] | None = None,
+) -> str:
+    normalized = _normalized_runtime_lang_code(lang_code)
+    if not normalized:
+        raise ValueError("Language code must be a non-empty string.")
+    language_label = str(label or "").strip() or normalized
+    LANGUAGE_LABELS[normalized] = language_label
+    VOICE_OPTIONS_BY_LANG.setdefault(normalized, [])
+    _upsert_language_choice(normalized)
+    if aliases:
+        for alias in aliases:
+            key = str(alias or "").strip().lower()
+            if key:
+                LANGUAGE_ALIASES[key] = normalized
+    return normalized
+
+
+def register_runtime_voices(
+    lang_code: str,
+    *,
+    voices: Iterable[tuple[str, str]],
+    language_label: str,
+    aliases: Iterable[str] | None = None,
+) -> list[str]:
+    normalized_lang = register_runtime_language(
+        lang_code,
+        label=language_label,
+        aliases=aliases,
+    )
+    registered: list[str] = []
+    for raw_label, raw_voice_id in voices:
+        voice_id = str(raw_voice_id or "").strip()
+        if not voice_id:
+            continue
+        label = str(raw_label or "").strip() or voice_id
+        VALID_VOICE_IDS.add(voice_id)
+        CHOICES[label] = voice_id
+        option = (label, voice_id)
+
+        existing_global = next(
+            (index for index, (_existing_label, existing_id) in enumerate(VOICE_ITEMS) if existing_id == voice_id),
+            None,
+        )
+        if existing_global is None:
+            VOICE_ITEMS.append(option)
+        else:
+            VOICE_ITEMS[existing_global] = option
+
+        lang_options = VOICE_OPTIONS_BY_LANG.setdefault(normalized_lang, [])
+        existing_local = next(
+            (index for index, (_existing_label, existing_id) in enumerate(lang_options) if existing_id == voice_id),
+            None,
+        )
+        if existing_local is None:
+            lang_options.append(option)
+        else:
+            lang_options[existing_local] = option
+        registered.append(voice_id)
+    return registered
 
 
 def normalize_lang_code(value: str | None, default: str = "a") -> str:

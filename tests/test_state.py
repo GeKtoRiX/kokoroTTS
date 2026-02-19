@@ -3,11 +3,11 @@ import numpy as np
 import time
 import torch
 
-from kokoro_tts.application.state import KokoroState
+from kokoro_tts.application.state import KokoroState, SILERO_TOKENIZE_PLACEHOLDER
 from kokoro_tts.application.ui_hooks import UiHooks
 from kokoro_tts.domain.audio_postfx import AudioPostFxSettings
 from kokoro_tts.domain.normalization import TextNormalizer
-from kokoro_tts.domain.voice import DialogueSegment
+from kokoro_tts.domain.voice import DialogueSegment, register_runtime_voices
 
 
 class _Logger:
@@ -105,6 +105,29 @@ class _MorphRepo:
         self.rows.append((parts, source))
 
 
+class _SileroManager:
+    def __init__(self):
+        self.calls = []
+        self.prewarm_calls = []
+        self.cpu_only = True
+
+    def synthesize(self, text, *, voice_id, sample_rate):
+        self.calls.append((text, voice_id, sample_rate))
+        return torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32)
+
+    def prewarm(self, *, voice_id=None, sample_rate=None):
+        self.prewarm_calls.append((voice_id, sample_rate))
+
+
+def _ensure_ru_demo_voice() -> None:
+    register_runtime_voices(
+        "r",
+        voices=[("Russian Demo", "r_demo")],
+        language_label="Russian",
+        aliases=("ru", "ru-ru"),
+    )
+
+
 def _build_state(
     *,
     hooks=None,
@@ -112,6 +135,7 @@ def _build_state(
     gpu_forward=None,
     pipeline=None,
     postfx_settings=None,
+    silero_manager=None,
 ):
     model_manager = _ModelManager(pipeline=pipeline)
     normalizer = TextNormalizer(char_limit=80, normalize_times=False, normalize_numbers=False)
@@ -129,6 +153,7 @@ def _build_state(
         ui_hooks=hooks,
         morphology_repository=morph_repo,
         postfx_settings=postfx_settings,
+        silero_manager=silero_manager,
     )
     return state, model_manager, audio_writer, logger
 
@@ -147,6 +172,25 @@ def test_tokenize_first_and_prepare_dialogue_parts():
         [DialogueSegment("am_michael", "second part", "neutral", None)],
     ]
     assert state.tokenize_first("hello world", voice="af_heart") == "hello"
+
+
+def test_tokenize_first_for_russian_voice_returns_placeholder():
+    _ensure_ru_demo_voice()
+    silero_manager = _SileroManager()
+    state, _, _, _ = _build_state(silero_manager=silero_manager)
+    result = state.tokenize_first("Привет мир", voice="r_demo")
+    assert result == SILERO_TOKENIZE_PLACEHOLDER
+
+
+def test_tokenize_first_for_russian_voice_requires_backend():
+    _ensure_ru_demo_voice()
+    state, _, _, _ = _build_state()
+    try:
+        state.tokenize_first("Привет мир", voice="r_demo")
+    except RuntimeError as exc:
+        assert "Russian TTS backend is not initialized" in str(exc)
+    else:
+        raise AssertionError("Expected missing Russian backend error")
 
 
 def test_generate_first_saves_outputs_and_persists_morphology():
@@ -169,6 +213,22 @@ def test_generate_first_saves_outputs_and_persists_morphology():
     assert writer.saved[0][3] is not None
     assert morph.rows and morph.rows[0][1] == "generate_first"
     assert state.last_saved_paths
+
+
+def test_generate_first_uses_silero_for_russian_voice():
+    _ensure_ru_demo_voice()
+    silero_manager = _SileroManager()
+    state, _, _, _ = _build_state(silero_manager=silero_manager)
+    result, first_ps = state.generate_first(
+        "Привет мир",
+        voice="r_demo",
+        save_outputs=False,
+        use_gpu=True,
+    )
+    assert result is not None
+    assert first_ps
+    assert silero_manager.calls
+    assert silero_manager.calls[0][1] == "r_demo"
 
 
 def test_generate_first_handles_empty_input():
@@ -194,6 +254,23 @@ def test_generate_all_streams_audio_and_pause():
     assert len(chunks) >= 2
     assert all(rate == 24000 for rate, _ in chunks)
     assert morph.rows and morph.rows[0][1] == "generate_all"
+
+
+def test_generate_all_uses_silero_for_russian_voice():
+    _ensure_ru_demo_voice()
+    silero_manager = _SileroManager()
+    state, _, _, _ = _build_state(silero_manager=silero_manager)
+    chunks = list(
+        state.generate_all(
+            "Привет мир",
+            voice="r_demo",
+            use_gpu=True,
+            pause_seconds=0.0,
+        )
+    )
+    assert chunks
+    assert all(rate == 24000 for rate, _ in chunks)
+    assert silero_manager.calls
 
 
 def test_generate_audio_ui_error_fallbacks_to_cpu():
@@ -341,6 +418,14 @@ def test_prewarm_inference_runs_pipeline_and_model():
     state.prewarm_inference(voice="af_heart", use_gpu=False, style_preset="neutral")
     assert manager.pipeline.calls
     assert manager.cpu_model.calls
+
+
+def test_prewarm_inference_uses_silero_for_russian_voice():
+    _ensure_ru_demo_voice()
+    silero_manager = _SileroManager()
+    state, _, _, _ = _build_state(silero_manager=silero_manager)
+    state.prewarm_inference(voice="r_demo", use_gpu=True, style_preset="neutral")
+    assert silero_manager.prewarm_calls
 
 
 def test_async_morphology_ingest_enqueue_and_flush():
