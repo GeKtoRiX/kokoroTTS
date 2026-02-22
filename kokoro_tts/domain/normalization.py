@@ -1,4 +1,5 @@
 """Text normalization for times and numbers."""
+
 from __future__ import annotations
 
 import logging
@@ -11,6 +12,10 @@ logger = logging.getLogger("kokoro_app")
 
 TIME_RE = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)(?:\s*([AaPp])\.?\s*[Mm]\.?)?\b")
 MULTI_DOT_NUMBER_RE = re.compile(r"\b\d+(?:\.\d+){2,}\b")
+DATE_TAG_PREFIX_RE = re.compile(r"\[date\]\s*(\d{4})", re.IGNORECASE)
+DATE_TAG_INLINE_RE = re.compile(r"\[date\s*=\s*(\d{4})\s*\]", re.IGNORECASE)
+TNUMBER_TAG_PREFIX_RE = re.compile(r"\[tnumber\]\s*(\d+)", re.IGNORECASE)
+TNUMBER_TAG_INLINE_RE = re.compile(r"\[tnumber\s*=\s*(\d+)\s*\]", re.IGNORECASE)
 ORDINAL_RE = re.compile(r"\b(\d{1,4})(st|nd|rd|th)\b", re.IGNORECASE)
 PERCENT_RE = re.compile(r"\b(\d{1,3}(?:,\d{3})*|\d+)(?:\.(\d+))?%")
 DECIMAL_RE = re.compile(r"\b(\d{1,3}(?:,\d{3})*|\d+)\.(\d+)\b")
@@ -150,6 +155,53 @@ def digits_to_words(digits: str) -> str:
 
 
 @lru_cache(maxsize=2048)
+def digit_sequence_to_words(digits: str) -> str:
+    """Speak a raw digit sequence in phone-style form.
+
+    Example: 0123411 -> "oh one two three four double one"
+    """
+    if not digits:
+        return ""
+    words: list[str] = []
+    index = 0
+    repeat_words = {2: "double", 3: "triple", 4: "quadruple"}
+    while index < len(digits):
+        current = digits[index]
+        run_end = index + 1
+        while run_end < len(digits) and digits[run_end] == current:
+            run_end += 1
+        run_length = run_end - index
+        digit_word = "oh" if current == "0" else ONES[int(current)]
+        if run_length in repeat_words:
+            words.append(f"{repeat_words[run_length]} {digit_word}")
+        else:
+            words.extend(digit_word for _ in range(run_length))
+        index = run_end
+    return " ".join(words)
+
+
+@lru_cache(maxsize=2048)
+def year_to_words(year: int) -> str:
+    """Speak years in date style, e.g. 1993 -> nineteen ninety three."""
+    if 1000 <= year <= 1999:
+        century = year // 100
+        remainder = year % 100
+        century_words = number_to_words_0_99(century)
+        if remainder == 0:
+            return f"{century_words} hundred"
+        if remainder < 10:
+            return f"{century_words} oh {ONES[remainder]}"
+        return f"{century_words} {number_to_words_0_99(remainder)}"
+    if year == 2000:
+        return "two thousand"
+    if 2001 <= year <= 2009:
+        return f"two thousand and {number_to_words_0_99(year % 100)}"
+    if 2010 <= year <= 2099:
+        return f"twenty {number_to_words_0_99(year % 100)}"
+    return number_to_words_0_9999(year)
+
+
+@lru_cache(maxsize=2048)
 def time_to_words(hour: int, minute: int, ampm_letter: str | None) -> str:
     if ampm_letter:
         hour = hour % 12
@@ -258,6 +310,20 @@ def normalize_numbers(text: str) -> str:
         replacements += 1
         return f"{int_words} point {digits_to_words(dec_part)}"
 
+    def repl_date_tag(match: re.Match[str]) -> str:
+        nonlocal replacements
+        value = int(match.group(1))
+        replacements += 1
+        return year_to_words(value)
+
+    def repl_tnumber_tag(match: re.Match[str]) -> str:
+        nonlocal replacements
+        digits = match.group(0)
+        if match.lastindex is not None:
+            digits = match.group(1)
+        replacements += 1
+        return digit_sequence_to_words(digits)
+
     def repl_int(match: re.Match[str]) -> str:
         nonlocal replacements
         int_words = int_to_words(match.group(1))
@@ -272,6 +338,10 @@ def normalize_numbers(text: str) -> str:
     skip_spans = _merge_spans(skip_spans)
 
     def apply_all(segment: str) -> str:
+        segment = DATE_TAG_PREFIX_RE.sub(repl_date_tag, segment)
+        segment = DATE_TAG_INLINE_RE.sub(repl_date_tag, segment)
+        segment = TNUMBER_TAG_PREFIX_RE.sub(repl_tnumber_tag, segment)
+        segment = TNUMBER_TAG_INLINE_RE.sub(repl_tnumber_tag, segment)
         segment = PERCENT_RE.sub(repl_percent, segment)
         segment = ORDINAL_RE.sub(repl_ordinal, segment)
         segment = DECIMAL_RE.sub(repl_decimal, segment)
@@ -287,7 +357,9 @@ def normalize_numbers(text: str) -> str:
 class TextNormalizer:
     """Applies character limits and number/time normalization."""
 
-    def __init__(self, char_limit: int | None, normalize_times: bool, normalize_numbers: bool) -> None:
+    def __init__(
+        self, char_limit: int | None, normalize_times: bool, normalize_numbers: bool
+    ) -> None:
         self.char_limit = char_limit
         self.normalize_times = normalize_times
         self.normalize_numbers = normalize_numbers

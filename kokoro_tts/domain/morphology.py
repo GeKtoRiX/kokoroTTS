@@ -1,4 +1,5 @@
-﻿"""English token analysis with deterministic JSON output for DB ingestion."""
+"""English token analysis with deterministic JSON output for DB ingestion."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -319,7 +320,9 @@ def _merge_annotation_pair(
     first_lemma = _normalize_lemma(first.lemma, token.text)
     second_lemma = _normalize_lemma(second.lemma, token.text)
     merged_lemma = first_lemma
-    if _lemma_is_identity(first_lemma, token.text) and not _lemma_is_identity(second_lemma, token.text):
+    if _lemma_is_identity(first_lemma, token.text) and not _lemma_is_identity(
+        second_lemma, token.text
+    ):
         merged_lemma = second_lemma
 
     merged_feats = _normalize_feats(second.feats)

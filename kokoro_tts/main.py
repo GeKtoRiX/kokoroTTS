@@ -1,4 +1,5 @@
 """Module entrypoint for launching the desktop app."""
+
 from __future__ import annotations
 
 import app

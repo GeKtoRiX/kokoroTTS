@@ -1,4 +1,5 @@
 """Configuration loading from environment variables."""
+
 from __future__ import annotations
 
 import os
@@ -19,6 +20,7 @@ class AppConfig:
     repo_id: str
     output_dir: str
     output_dir_abs: str
+    app_state_path: str
     max_chunk_chars: int
     history_limit: int
     normalize_times: bool
@@ -51,10 +53,6 @@ class AppConfig:
     postfx_loudness_enabled: bool = True
     postfx_loudness_target_lufs: float = -16.0
     postfx_loudness_true_peak_db: float = -1.0
-    ru_tts_enabled: bool = True
-    ru_tts_model_id: str = "v5_cis_base"
-    ru_tts_cache_dir: str = "data/cache/torch"
-    ru_tts_cpu_only: bool = True
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -67,12 +65,14 @@ def load_config() -> AppConfig:
     file_log_level = os.getenv("FILE_LOG_LEVEL", "DEBUG").upper()
     log_dir = resolve_path(os.getenv("LOG_DIR", "logs"), base_dir)
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(
-        log_dir, f"app_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.log"
-    )
+    log_file = os.path.join(log_dir, f"app_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.log")
     repo_id = os.getenv("KOKORO_REPO_ID", "hexgrad/Kokoro-82M")
     output_dir = resolve_path(os.getenv("OUTPUT_DIR", "outputs"), base_dir)
     output_dir_abs = os.path.abspath(output_dir)
+    app_state_path = resolve_path(
+        os.getenv("APP_STATE_PATH", "data/app_state.json"),
+        base_dir,
+    )
     max_chunk_chars = parse_int_env("MAX_CHUNK_CHARS", 500, min_value=50, max_value=2000)
     history_limit = parse_int_env("HISTORY_LIMIT", 5, min_value=0, max_value=20)
     normalize_times = os.getenv("NORMALIZE_TIMES", "1").strip().lower() not in (
@@ -91,9 +91,7 @@ def load_config() -> AppConfig:
     default_concurrency_limit = parse_int_env("DEFAULT_CONCURRENCY_LIMIT", 0, min_value=0)
     if default_concurrency_limit == 0:
         default_concurrency_limit = None
-    log_segment_every = parse_int_env(
-        "LOG_EVERY_N_SEGMENTS", 10, min_value=1, max_value=1000
-    )
+    log_segment_every = parse_int_env("LOG_EVERY_N_SEGMENTS", 10, min_value=1, max_value=1000)
     morph_db_enabled = os.getenv("MORPH_DB_ENABLED", "0").strip().lower() in (
         "1",
         "true",
@@ -178,13 +176,6 @@ def load_config() -> AppConfig:
         min_value=-9.0,
         max_value=0.0,
     )
-    ru_tts_enabled = _env_flag("RU_TTS_ENABLED", "1")
-    ru_tts_model_id = os.getenv("RU_TTS_MODEL_ID", "v5_cis_base").strip() or "v5_cis_base"
-    ru_tts_cache_dir = resolve_path(
-        os.getenv("RU_TTS_CACHE_DIR", "data/cache/torch").strip(),
-        base_dir,
-    )
-    ru_tts_cpu_only = _env_flag("RU_TTS_CPU_ONLY", "1")
     return AppConfig(
         log_level=log_level,
         file_log_level=file_log_level,
@@ -193,6 +184,7 @@ def load_config() -> AppConfig:
         repo_id=repo_id,
         output_dir=output_dir,
         output_dir_abs=output_dir_abs,
+        app_state_path=app_state_path,
         max_chunk_chars=max_chunk_chars,
         history_limit=history_limit,
         normalize_times=normalize_times,
@@ -225,8 +217,4 @@ def load_config() -> AppConfig:
         postfx_loudness_enabled=postfx_loudness_enabled,
         postfx_loudness_target_lufs=postfx_loudness_target_lufs,
         postfx_loudness_true_peak_db=postfx_loudness_true_peak_db,
-        ru_tts_enabled=ru_tts_enabled,
-        ru_tts_model_id=ru_tts_model_id,
-        ru_tts_cache_dir=ru_tts_cache_dir,
-        ru_tts_cpu_only=ru_tts_cpu_only,
     )

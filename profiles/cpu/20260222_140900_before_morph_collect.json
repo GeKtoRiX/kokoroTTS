@@ -1,0 +1,244 @@
+{
+  "phase": "before",
+  "timestamp": "20260222_140900",
+  "workload": {
+    "parts": 8,
+    "segments_per_part": 120,
+    "tokens_per_segment": 140,
+    "unique_segments": 24,
+    "segment_cache_size": 1024
+  },
+  "result": {
+    "elapsed_seconds": 1.6587601999635808,
+    "token_rows": 134400,
+    "expression_rows": 960
+  },
+  "top_functions": [
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 522,
+      "function": "_collect_ingest_rows",
+      "calls": 1,
+      "primitive_calls": 1,
+      "total_time_s": 0.0029084000000000002,
+      "cumulative_time_s": 1.6587087
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 423,
+      "function": "_collect_segment_tokens",
+      "calls": 960,
+      "primitive_calls": 960,
+      "total_time_s": 0.5176861,
+      "cumulative_time_s": 1.6385786
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 418,
+      "function": "_serialize_feats_json",
+      "calls": 134400,
+      "primitive_calls": 134400,
+      "total_time_s": 0.0587816,
+      "cumulative_time_s": 0.5965815
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\json\\__init__.py",
+      "line": 183,
+      "function": "dumps",
+      "calls": 134400,
+      "primitive_calls": 134400,
+      "total_time_s": 0.1245929,
+      "cumulative_time_s": 0.5280759
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\json\\encoder.py",
+      "line": 183,
+      "function": "encode",
+      "calls": 134400,
+      "primitive_calls": 134400,
+      "total_time_s": 0.0979835,
+      "cumulative_time_s": 0.38452240000000004
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\json\\encoder.py",
+      "line": 205,
+      "function": "iterencode",
+      "calls": 134400,
+      "primitive_calls": 134400,
+      "total_time_s": 0.2436695,
+      "cumulative_time_s": 0.2436695
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'get' of 'dict' objects>",
+      "calls": 951360,
+      "primitive_calls": 951360,
+      "total_time_s": 0.11494380000000001,
+      "cumulative_time_s": 0.11494380000000001
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'strip' of 'str' objects>",
+      "calls": 543361,
+      "primitive_calls": 543361,
+      "total_time_s": 0.0631478,
+      "cumulative_time_s": 0.0631478
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<built-in method builtins.isinstance>",
+      "calls": 540480,
+      "primitive_calls": 540480,
+      "total_time_s": 0.046735900000000004,
+      "cumulative_time_s": 0.046735900000000004
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 779,
+      "function": "_to_int",
+      "calls": 270720,
+      "primitive_calls": 270720,
+      "total_time_s": 0.041338400000000004,
+      "cumulative_time_s": 0.041338400000000004
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\json\\encoder.py",
+      "line": 105,
+      "function": "__init__",
+      "calls": 134400,
+      "primitive_calls": 134400,
+      "total_time_s": 0.0189606,
+      "cumulative_time_s": 0.0189606
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'append' of 'list' objects>",
+      "calls": 135360,
+      "primitive_calls": 135360,
+      "total_time_s": 0.0185705,
+      "cumulative_time_s": 0.0185705
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'upper' of 'str' objects>",
+      "calls": 134400,
+      "primitive_calls": 134400,
+      "total_time_s": 0.0181772,
+      "cumulative_time_s": 0.0181772
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'join' of 'str' objects>",
+      "calls": 134400,
+      "primitive_calls": 134400,
+      "total_time_s": 0.0161145,
+      "cumulative_time_s": 0.0161145
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 471,
+      "function": "_collect_segment_expressions",
+      "calls": 960,
+      "primitive_calls": 960,
+      "total_time_s": 0.0050539,
+      "cumulative_time_s": 0.009524000000000001
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 412,
+      "function": "_segment_hash",
+      "calls": 960,
+      "primitive_calls": 960,
+      "total_time_s": 0.0009018,
+      "cumulative_time_s": 0.0038839
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 569,
+      "function": "_cache_lookup",
+      "calls": 1920,
+      "primitive_calls": 1920,
+      "total_time_s": 0.001662,
+      "cumulative_time_s": 0.0028068000000000004
+    },
+    {
+      "file": "<string>",
+      "line": 2,
+      "function": "__init__",
+      "calls": 960,
+      "primitive_calls": 960,
+      "total_time_s": 0.0022066,
+      "cumulative_time_s": 0.0022066
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<built-in method _hashlib.openssl_sha1>",
+      "calls": 960,
+      "primitive_calls": 960,
+      "total_time_s": 0.0016638,
+      "cumulative_time_s": 0.0016638
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'extend' of 'list' objects>",
+      "calls": 1920,
+      "primitive_calls": 1920,
+      "total_time_s": 0.0008378000000000001,
+      "cumulative_time_s": 0.0008378000000000001
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'hexdigest' of '_hashlib.HASH' objects>",
+      "calls": 960,
+      "primitive_calls": 960,
+      "total_time_s": 0.0008198000000000001,
+      "cumulative_time_s": 0.0008198000000000001
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'encode' of 'str' objects>",
+      "calls": 960,
+      "primitive_calls": 960,
+      "total_time_s": 0.0004985,
+      "cumulative_time_s": 0.0004985
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'move_to_end' of 'collections.OrderedDict' objects>",
+      "calls": 1920,
+      "primitive_calls": 1920,
+      "total_time_s": 0.00042140000000000005,
+      "cumulative_time_s": 0.00042140000000000005
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method '__exit__' of '_thread.lock' objects>",
+      "calls": 1920,
+      "primitive_calls": 1920,
+      "total_time_s": 0.0002529,
+      "cumulative_time_s": 0.0002529
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'disable' of '_lsprof.Profiler' objects>",
+      "calls": 1,
+      "primitive_calls": 1,
+      "total_time_s": 1.72e-05,
+      "cumulative_time_s": 1.72e-05
+    }
+  ],
+  "profile_path": "profiles/cpu/20260222_140900_before_morph_collect.prof"
+}

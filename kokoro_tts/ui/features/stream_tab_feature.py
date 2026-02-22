@@ -23,7 +23,9 @@ class StreamTabFeature:
         ttk.Label(frame, textvariable=ui.stream_status_var, wraplength=760).pack(anchor="w")
         btn_row = ttk.Frame(frame)
         btn_row.pack(fill="x", pady=(8, 8))
-        ui.stream_btn = ttk.Button(btn_row, text="Stream", style="Primary.TButton", command=ui._on_stream_start)
+        ui.stream_btn = ttk.Button(
+            btn_row, text="Stream", style="Primary.TButton", command=ui._on_stream_start
+        )
         ui.stop_stream_btn = ttk.Button(btn_row, text="Stop", command=ui._on_stream_stop)
         ui.stream_btn.pack(side="left")
         ui.stop_stream_btn.pack(side="left", padx=(8, 0))
@@ -70,9 +72,7 @@ class StreamTabFeature:
             except Exception as exc:  # pragma: no cover - UI threading path
                 ui.logger.exception("Stream playback failed")
                 message = f"Stream failed: {exc}"
-                ui._run_on_ui(
-                    lambda message=message: ui.stream_status_var.set(message)
-                )
+                ui._run_on_ui(lambda message=message: ui.stream_status_var.set(message))
             else:
                 if ui.stream_stop_event.is_set():
                     ui._run_on_ui(lambda: ui.stream_status_var.set("Stream stopped."))

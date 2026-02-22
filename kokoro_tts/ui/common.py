@@ -1,4 +1,5 @@
 """UI-neutral helpers shared by desktop UI implementations."""
+
 from __future__ import annotations
 
 import inspect
@@ -14,7 +15,7 @@ APP_TITLE = "KokoroTTS"
 TOKEN_NOTE = (
     "\nCustomize pronunciation with Markdown link syntax and /slashes/ like "
     "`[Kokoro](/k o k o r o/)`\n\n"
-    "To adjust intonation, try punctuation `;:,.!?\\\"()` and stress markers.\n\n"
+    'To adjust intonation, try punctuation `;:,.!?\\"()` and stress markers.\n\n'
     "Lower stress: `[1 level](-1)` or `[2 levels](-2)`\n\n"
     "Raise stress: `[or](+2)` (or +1 where supported)\n"
 )
@@ -92,7 +93,8 @@ def supports_export_format_arg(callback: Any) -> bool:
     positional = [
         param
         for param in parameters
-        if param.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        if param.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
     ]
     if len(positional) >= 2:
         return True

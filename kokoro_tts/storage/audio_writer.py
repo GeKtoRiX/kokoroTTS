@@ -1,4 +1,5 @@
 """Audio output management and file conversions."""
+
 from __future__ import annotations
 
 import os
@@ -64,7 +65,11 @@ class AudioWriter:
         return path
 
     def save_wav(self, path: str, audio_tensor) -> None:
-        tensor = audio_tensor if isinstance(audio_tensor, torch.Tensor) else torch.as_tensor(audio_tensor)
+        tensor = (
+            audio_tensor
+            if isinstance(audio_tensor, torch.Tensor)
+            else torch.as_tensor(audio_tensor)
+        )
         tensor = tensor.detach().cpu().flatten()
         tensor = torch.clamp(tensor, -1.0, 1.0)
         int16 = (tensor * 32767.0).to(torch.int16).numpy()
@@ -183,6 +188,16 @@ class AudioWriter:
         os.remove(tmp_path)
         return self._apply_loudness_normalization(path, postfx_settings)
 
+    def save_text_sidecar(self, audio_path: str, text: str) -> str:
+        base, _ext = os.path.splitext(audio_path)
+        txt_path = f"{base}.txt"
+        output_dir = os.path.dirname(txt_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        with open(txt_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text or "")
+        return txt_path
+
     def build_output_paths(
         self,
         voice: str,
@@ -191,16 +206,18 @@ class AudioWriter:
     ) -> list[str]:
         output_format = self.resolve_output_format(output_format)
         records_dir, _ = self._dated_output_dirs()
+        run_dir = os.path.join(records_dir, datetime.now().strftime("%H-%M-%S"))
+        os.makedirs(run_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         safe_voice = self._sanitize_voice_id(voice)
         suffix = uuid.uuid4().hex[:8]
         if parts_count <= 0:
             return []
         if parts_count == 1:
-            return [os.path.join(records_dir, f"{timestamp}_{safe_voice}_{suffix}.{output_format}")]
+            return [os.path.join(run_dir, f"{timestamp}_{safe_voice}_{suffix}.{output_format}")]
         return [
             os.path.join(
-                records_dir,
+                run_dir,
                 f"{timestamp}_{safe_voice}_{suffix}_part{index:02d}.{output_format}",
             )
             for index in range(1, parts_count + 1)

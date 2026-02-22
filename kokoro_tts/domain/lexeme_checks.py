@@ -2,6 +2,7 @@
 
 Only local lexeme validation is supported.
 """
+
 from __future__ import annotations
 
 from typing import Callable

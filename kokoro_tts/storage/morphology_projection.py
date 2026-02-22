@@ -95,7 +95,9 @@ def build_pos_table_preview_from_lexemes(
 
     column_pairs = _resolve_pos_column_pairs(upos_buckets)
     preview_headers = [label for label, _upos in column_pairs]
-    max_row_count = max((len(upos_buckets.get(upos, [])) for _label, upos in column_pairs), default=0)
+    max_row_count = max(
+        (len(upos_buckets.get(upos, [])) for _label, upos in column_pairs), default=0
+    )
     preview_rows: list[list[str]] = []
     for row_idx in range(min(max_row_count, max_rows)):
         values: list[str] = []

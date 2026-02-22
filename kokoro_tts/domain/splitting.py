@@ -1,4 +1,5 @@
 """Sentence and chunk splitting helpers."""
+
 from __future__ import annotations
 
 import logging
@@ -48,7 +49,10 @@ def split_sentences(text: str) -> list[str]:
         match_start = match.start(1)
         while span_index < span_count and skip_spans[span_index][1] <= match_start:
             span_index += 1
-        if span_index < span_count and skip_spans[span_index][0] <= match_start < skip_spans[span_index][1]:
+        if (
+            span_index < span_count
+            and skip_spans[span_index][0] <= match_start < skip_spans[span_index][1]
+        ):
             continue
         if _is_abbrev(text, match_start):
             continue

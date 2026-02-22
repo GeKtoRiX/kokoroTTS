@@ -14,6 +14,7 @@ from types import SimpleNamespace
 def _ensure_torch_stub() -> None:
     if importlib.util.find_spec("torch") is not None:
         import torch  # noqa: F401
+
         return
     if "torch" in sys.modules:
         return

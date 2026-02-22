@@ -1,7 +1,9 @@
 """Application state and orchestration for audio generation."""
+
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from collections import deque
 import inspect
 import logging
 import threading
@@ -17,20 +19,17 @@ from ..domain.audio_postfx import (
     trim_silence,
 )
 from ..domain.normalization import TextNormalizer
-from ..domain.splitting import smart_split, split_parts
+from ..domain.splitting import smart_split, split_parts, split_sentences
 from ..domain.style import PIPELINE_STYLE_PARAM_NAMES, resolve_style_runtime
 from ..domain.voice import (
     DialogueSegment,
     limit_dialogue_segment_parts,
     parse_dialogue_segments,
     summarize_dialogue_voice,
-    voice_language,
 )
 from ..integrations.model_manager import ModelManager
 from ..storage.audio_writer import AudioWriter
 from .ui_hooks import UiHooks
-
-SILERO_TOKENIZE_PLACEHOLDER = "[tokenization unavailable for silero]"
 
 
 class KokoroState:
@@ -50,10 +49,8 @@ class KokoroState:
         morphology_async_ingest: bool = False,
         morphology_async_max_pending: int = 8,
         postfx_settings: AudioPostFxSettings | None = None,
-        silero_manager=None,
     ) -> None:
         self.model_manager = model_manager
-        self.silero_manager = silero_manager
         self.normalizer = normalizer
         self.audio_writer = audio_writer
         self.max_chunk_chars = max_chunk_chars
@@ -71,8 +68,10 @@ class KokoroState:
         self._pause_tensor_cache: dict[int, torch.Tensor] = {}
         self._morph_executor: ThreadPoolExecutor | None = None
         self._pending_morph_futures: list[Future[None]] = []
+        self._pending_morph_payloads: deque[tuple[tuple[tuple[str, str], ...], str]] = deque()
+        self._morph_payload_backlog_limit = max(1, self.morphology_async_max_pending * 4)
         self._pending_morph_lock = threading.Lock()
-        self._ru_cpu_notice_logged = False
+        self._shutdown_lock = threading.Lock()
         self.postfx_settings = postfx_settings or AudioPostFxSettings()
         if self.morphology_repository is not None and self.morphology_async_ingest:
             self._morph_executor = ThreadPoolExecutor(
@@ -83,45 +82,89 @@ class KokoroState:
     def set_aux_features_enabled(self, enabled: bool) -> None:
         self.aux_features_enabled = bool(enabled)
 
-    @staticmethod
-    def _voice_lang(voice: str) -> str:
-        return voice_language(voice, default="a")
-
-    @staticmethod
-    def _primary_voice_id(voice: str) -> str:
-        return str(voice or "").split(",", 1)[0].strip()
-
-    def _is_ru_voice(self, voice: str) -> bool:
-        return self._voice_lang(voice) == "r"
-
-    def _require_silero_manager(self):
-        if self.silero_manager is None:
-            raise RuntimeError("Russian TTS backend is not initialized.")
-        return self.silero_manager
-
     def _on_morph_ingest_done(self, future: Future[None]) -> None:
         try:
             future.result()
         except Exception:
             self.logger.exception("Morphology DB async write failed")
+        self._drain_pending_morph_payloads()
 
     def _trim_pending_morph_futures(self) -> None:
         self._pending_morph_futures = [
             future for future in self._pending_morph_futures if not future.done()
         ]
 
-    def wait_for_pending_morphology(self, timeout: float | None = None) -> None:
-        futures: list[Future[None]]
-        with self._pending_morph_lock:
-            self._trim_pending_morph_futures()
-            futures = list(self._pending_morph_futures)
-        if not futures:
+    def _submit_morph_payload(
+        self,
+        payload: tuple[tuple[tuple[str, str], ...], ...],
+        *,
+        source: str,
+    ) -> None:
+        if self._morph_executor is None:
             return
-        for future in futures:
-            try:
-                future.result(timeout=timeout)
-            except Exception:
-                self.logger.exception("Morphology DB async wait failed")
+        future = self._morph_executor.submit(
+            self.morphology_repository.ingest_dialogue_parts,
+            payload,
+            source=source,
+        )
+        future.add_done_callback(self._on_morph_ingest_done)
+        self._pending_morph_futures.append(future)
+
+    def _drain_pending_morph_payloads(self) -> None:
+        while True:
+            with self._pending_morph_lock:
+                self._trim_pending_morph_futures()
+                if (
+                    self._morph_executor is None
+                    or len(self._pending_morph_futures) >= self.morphology_async_max_pending
+                    or not self._pending_morph_payloads
+                ):
+                    return
+                payload, source = self._pending_morph_payloads.popleft()
+                self._submit_morph_payload(payload, source=source)
+
+    def wait_for_pending_morphology(self, timeout: float | None = None) -> None:
+        while True:
+            self._drain_pending_morph_payloads()
+            futures: list[Future[None]]
+            backlog_size: int
+            with self._pending_morph_lock:
+                self._trim_pending_morph_futures()
+                futures = list(self._pending_morph_futures)
+                backlog_size = len(self._pending_morph_payloads)
+            if not futures and backlog_size == 0:
+                return
+            for future in futures:
+                try:
+                    future.result(timeout=timeout)
+                except Exception:
+                    self.logger.exception("Morphology DB async wait failed")
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        deferred_payloads: list[tuple[tuple[tuple[str, str], ...], str]] = []
+        with self._shutdown_lock:
+            executor = self._morph_executor
+            self._morph_executor = None
+            with self._pending_morph_lock:
+                self._trim_pending_morph_futures()
+                pending = list(self._pending_morph_futures)
+                self._pending_morph_futures = []
+                deferred_payloads = list(self._pending_morph_payloads)
+                self._pending_morph_payloads.clear()
+        if executor is None:
+            return
+        if wait:
+            for future in pending:
+                try:
+                    future.result()
+                except Exception:
+                    self.logger.exception("Morphology DB async shutdown wait failed")
+            for payload, source in deferred_payloads:
+                try:
+                    self.morphology_repository.ingest_dialogue_parts(payload, source=source)
+                except Exception:
+                    self.logger.exception("Morphology DB shutdown backlog write failed")
+        executor.shutdown(wait=wait, cancel_futures=not wait)
 
     def _persist_morphology(
         self,
@@ -148,29 +191,31 @@ class KokoroState:
                 self.logger.exception("Morphology DB write failed")
             return
 
-        should_write_sync = False
+        payload = tuple(tuple(segment for segment in segments) for segments in morph_parts)
+        queued = False
         with self._pending_morph_lock:
             self._trim_pending_morph_futures()
             if len(self._pending_morph_futures) >= self.morphology_async_max_pending:
-                should_write_sync = True
+                if len(self._pending_morph_payloads) < self._morph_payload_backlog_limit:
+                    self._pending_morph_payloads.append((payload, source))
+                    queued = True
             else:
-                payload = tuple(tuple(segment for segment in segments) for segments in morph_parts)
-                future = self._morph_executor.submit(
-                    self.morphology_repository.ingest_dialogue_parts,
-                    payload,
-                    source=source,
-                )
-                future.add_done_callback(self._on_morph_ingest_done)
-                self._pending_morph_futures.append(future)
-        if should_write_sync:
-            self.logger.warning(
-                "Morphology ingest queue is full (%s pending); writing synchronously",
-                self.morphology_async_max_pending,
-            )
-            try:
-                self.morphology_repository.ingest_dialogue_parts(morph_parts, source=source)
-            except Exception:
-                self.logger.exception("Morphology DB write failed")
+                self._submit_morph_payload(payload, source=source)
+                queued = True
+        if queued:
+            return
+        self.logger.warning(
+            "Morphology ingest queue is full (%s pending + %s backlog); writing synchronously",
+            self.morphology_async_max_pending,
+            self._morph_payload_backlog_limit,
+        )
+        try:
+            self.morphology_repository.ingest_dialogue_parts(morph_parts, source=source)
+        except Exception:
+            self.logger.exception("Morphology DB write failed")
+
+    def flush_morphology_backlog(self) -> None:
+        self.wait_for_pending_morphology(timeout=None)
 
     def tokenize_first(
         self,
@@ -190,25 +235,24 @@ class KokoroState:
         )
         if not parts:
             return ""
-        first_segment = parts[0][0]
-        if self._is_ru_voice(first_segment.voice):
-            self._require_silero_manager()
-            return SILERO_TOKENIZE_PLACEHOLDER
-        segment_style, segment_speed, _ = resolve_style_runtime(
-            first_segment.style_preset,
-            speed,
-            0.0,
-        )
-        pipeline = self.model_manager.get_pipeline(first_segment.voice)
-        for _, ps, _ in self._run_pipeline(
-            first_segment.text,
-            first_segment.voice,
-            segment_speed,
-            segment_style,
-            pipeline,
-        ):
-            return ps
-        return ""
+        token_lines: list[str] = []
+        for segments in parts:
+            for segment in segments:
+                segment_style, segment_speed, _ = resolve_style_runtime(
+                    segment.style_preset,
+                    speed,
+                    0.0,
+                )
+                pipeline = self.model_manager.get_pipeline(segment.voice)
+                for _, ps, _ in self._run_pipeline(
+                    segment.text,
+                    segment.voice,
+                    segment_speed,
+                    segment_style,
+                    pipeline,
+                ):
+                    token_lines.append(str(ps))
+        return "\n".join(token_lines)
 
     def _preprocess_text(
         self,
@@ -348,6 +392,11 @@ class KokoroState:
             return None
         return pause_tensor.numpy()
 
+    @staticmethod
+    def _part_text_for_sidecar(segments: list[DialogueSegment]) -> str:
+        lines = [segment.text.strip() for segment in segments if segment.text.strip()]
+        return "\n".join(lines)
+
     def _postfx_enabled(self) -> bool:
         return bool(getattr(self.postfx_settings, "enabled", False))
 
@@ -379,47 +428,106 @@ class KokoroState:
         crossfade_ms = max(0, int(getattr(self.postfx_settings, "crossfade_ms", 25)))
         return max(0, int(round(crossfade_ms * SAMPLE_RATE / 1000.0)))
 
-    def _generate_audio_for_text_ru(
-        self,
-        text: str,
-        voice: str,
-        pause_seconds: float,
+    @staticmethod
+    def _apply_edge_fade_samples(
+        audio_tensor: torch.Tensor,
         *,
-        use_gpu: bool,
-    ) -> tuple[torch.Tensor | None, str]:
-        manager = self._require_silero_manager()
-        target_voice = self._primary_voice_id(voice)
-        if use_gpu and getattr(manager, "cpu_only", True) and not self._ru_cpu_notice_logged:
-            self.logger.info("Russian Silero backend is CPU-first; ignoring GPU selection for ru voices.")
-            self._ru_cpu_notice_logged = True
-        keep_sentences = pause_seconds > 0
-        sentences = smart_split(text, self.max_chunk_chars, keep_sentences=keep_sentences)
-        pause_samples = max(0, int(pause_seconds * SAMPLE_RATE))
-        pause_tensor = self._pause_tensor(pause_samples)
-        segments: list[torch.Tensor] = []
-        first_ps = ""
-        for index, sentence in enumerate(sentences):
+        fade_in_samples: int = 0,
+        fade_out_samples: int = 0,
+    ) -> torch.Tensor:
+        total = int(audio_tensor.numel())
+        if total <= 0:
+            return audio_tensor
+        in_count = max(0, min(total, int(fade_in_samples)))
+        out_count = max(0, min(total, int(fade_out_samples)))
+        if in_count <= 0 and out_count <= 0:
+            return audio_tensor
+        out = audio_tensor.clone()
+        if in_count > 0:
+            ramp_in = torch.linspace(0.0, 1.0, steps=in_count, dtype=out.dtype, device=out.device)
+            out[:in_count] = out[:in_count] * ramp_in
+        if out_count > 0:
+            ramp_out = torch.linspace(1.0, 0.0, steps=out_count, dtype=out.dtype, device=out.device)
+            out[-out_count:] = out[-out_count:] * ramp_out
+        return out
+
+    def _pause_edge_fade_samples(self, pause_samples: int) -> int:
+        if pause_samples <= 1:
+            return 0
+        # Short fixed micro-fade (8ms), capped so we never consume too much of the pause.
+        base_samples = max(1, int(round(8 * SAMPLE_RATE / 1000.0)))
+        return max(1, min(base_samples, pause_samples // 3))
+
+    def _sentence_chunk_groups(self, text: str, pause_seconds: float) -> list[list[str]]:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return []
+        if pause_seconds <= 0:
+            chunks = [
+                chunk.strip()
+                for chunk in smart_split(
+                    cleaned,
+                    self.max_chunk_chars,
+                    keep_sentences=False,
+                )
+                if chunk.strip()
+            ]
+            return [chunks] if chunks else []
+
+        grouped_chunks: list[list[str]] = []
+        for sentence in split_sentences(cleaned):
             sentence = sentence.strip()
             if not sentence:
                 continue
-            if not first_ps:
-                first_ps = sentence
-            audio = manager.synthesize(
-                sentence,
-                voice_id=target_voice,
-                sample_rate=SAMPLE_RATE,
+            chunks = [
+                chunk.strip()
+                for chunk in smart_split(
+                    sentence,
+                    self.max_chunk_chars,
+                    keep_sentences=False,
+                )
+                if chunk.strip()
+            ]
+            if chunks:
+                grouped_chunks.append(chunks)
+        if grouped_chunks:
+            return grouped_chunks
+
+        fallback_chunks = [
+            chunk.strip()
+            for chunk in smart_split(
+                cleaned,
+                self.max_chunk_chars,
+                keep_sentences=False,
             )
-            if hasattr(audio, "detach"):
-                audio = audio.detach().cpu().flatten()
-            else:
-                audio = torch.as_tensor(audio).detach().cpu().flatten()
-            if audio.numel() > 0:
-                segments.append(audio)
-            if pause_tensor is not None and index < len(sentences) - 1:
-                segments.append(pause_tensor)
-        if not segments:
-            return None, first_ps
-        return torch.cat(segments), first_ps
+            if chunk.strip()
+        ]
+        return [fallback_chunks] if fallback_chunks else []
+
+    def _join_sentence_audios(
+        self,
+        sentence_audios: list[torch.Tensor],
+        pause_tensor: torch.Tensor | None,
+    ) -> torch.Tensor | None:
+        if not sentence_audios:
+            return None
+        if pause_tensor is None or len(sentence_audios) == 1:
+            return torch.cat(sentence_audios)
+        pause_fade_samples = self._pause_edge_fade_samples(int(pause_tensor.numel()))
+        combined_segments: list[torch.Tensor] = []
+        for index, sentence_audio in enumerate(sentence_audios):
+            if pause_fade_samples > 0:
+                sentence_audio = self._apply_edge_fade_samples(
+                    sentence_audio,
+                    fade_in_samples=(pause_fade_samples if index > 0 else 0),
+                    fade_out_samples=(
+                        pause_fade_samples if index < len(sentence_audios) - 1 else 0
+                    ),
+                )
+            combined_segments.append(sentence_audio)
+            if index < len(sentence_audios) - 1:
+                combined_segments.append(pause_tensor)
+        return torch.cat(combined_segments)
 
     def _generate_audio_for_text(
         self,
@@ -430,55 +538,52 @@ class KokoroState:
         use_gpu: bool,
         pause_seconds: float,
     ) -> tuple[torch.Tensor | None, str]:
-        if self._is_ru_voice(voice):
-            return self._generate_audio_for_text_ru(
-                text,
-                voice,
-                pause_seconds,
-                use_gpu=use_gpu,
-            )
-        keep_sentences = pause_seconds > 0
-        sentences = smart_split(text, self.max_chunk_chars, keep_sentences=keep_sentences)
+        sentence_groups = self._sentence_chunk_groups(text, pause_seconds)
         pipeline = self.model_manager.get_pipeline(voice)
         pack = self.model_manager.get_voice_pack(voice)
         use_gpu = use_gpu and self.cuda_available
         pause_samples = max(0, int(pause_seconds * SAMPLE_RATE))
         pause_tensor = self._pause_tensor(pause_samples)
-        segments: list[torch.Tensor] = []
+        sentence_audios: list[torch.Tensor] = []
         first_ps = ""
         model_cpu = None
         if not use_gpu:
             model_cpu = self.model_manager.get_model(False)
         with torch.inference_mode():
-            for index, sentence in enumerate(sentences):
-                for _, ps, _ in self._run_pipeline(sentence, voice, speed, style_preset, pipeline):
-                    if not first_ps:
-                        first_ps = ps
-                    ref_s = pack[len(ps) - 1]
-                    try:
-                        if use_gpu:
-                            audio = self._forward_gpu(ps, ref_s, speed)
-                        else:
-                            audio = model_cpu(ps, ref_s, speed)
-                    except Exception as exc:
-                        if self._is_ui_error(exc):
-                            if use_gpu and self.ui_hooks:
-                                self.ui_hooks.warn(str(exc))
-                                self.ui_hooks.info(
-                                    "Retrying with CPU. To avoid this error, change Hardware to CPU."
-                                )
-                                audio = self.model_manager.get_model(False)(ps, ref_s, speed)
+            for sentence_chunks in sentence_groups:
+                chunk_audios: list[torch.Tensor] = []
+                for sentence in sentence_chunks:
+                    for _, ps, _ in self._run_pipeline(
+                        sentence, voice, speed, style_preset, pipeline
+                    ):
+                        if not first_ps:
+                            first_ps = ps
+                        ref_s = pack[len(ps) - 1]
+                        try:
+                            if use_gpu:
+                                audio = self._forward_gpu(ps, ref_s, speed)
                             else:
-                                raise self._raise_ui_error(exc)
-                        else:
-                            raise
-                    audio = audio.detach().cpu().flatten()
-                    segments.append(audio)
-                if pause_tensor is not None and index < len(sentences) - 1:
-                    segments.append(pause_tensor)
-        if not segments:
+                                audio = model_cpu(ps, ref_s, speed)
+                        except Exception as exc:
+                            if self._is_ui_error(exc):
+                                if use_gpu and self.ui_hooks:
+                                    self.ui_hooks.warn(str(exc))
+                                    self.ui_hooks.info(
+                                        "Retrying with CPU. To avoid this error, change Hardware to CPU."
+                                    )
+                                    audio = self.model_manager.get_model(False)(ps, ref_s, speed)
+                                else:
+                                    raise self._raise_ui_error(exc)
+                            else:
+                                raise
+                        audio = audio.detach().cpu().flatten()
+                        chunk_audios.append(audio)
+                if chunk_audios:
+                    sentence_audios.append(torch.cat(chunk_audios))
+        joined_audio = self._join_sentence_audios(sentence_audios, pause_tensor)
+        if joined_audio is None:
             return None, first_ps
-        return torch.cat(segments), first_ps
+        return joined_audio, first_ps
 
     def prewarm_inference(
         self,
@@ -487,13 +592,6 @@ class KokoroState:
         use_gpu: bool | None = None,
         style_preset: str = "neutral",
     ) -> None:
-        if self._is_ru_voice(voice):
-            manager = self._require_silero_manager()
-            manager.prewarm(
-                voice_id=self._primary_voice_id(voice),
-                sample_rate=SAMPLE_RATE,
-            )
-            return
         if use_gpu is None:
             use_gpu = self.cuda_available
         use_gpu = bool(use_gpu and self.cuda_available)
@@ -534,7 +632,9 @@ class KokoroState:
             use_gpu = self.cuda_available
         base_speed = speed
         base_pause_seconds = pause_seconds
-        style_preset, speed, pause_seconds = resolve_style_runtime(style_preset, speed, pause_seconds)
+        style_preset, speed, pause_seconds = resolve_style_runtime(
+            style_preset, speed, pause_seconds
+        )
         parts = self._prepare_dialogue_parts(
             text,
             voice,
@@ -573,6 +673,7 @@ class KokoroState:
         saved_paths: list[str] = []
         for index, segments in enumerate(parts):
             part_audio: torch.Tensor | None = None
+            part_text = self._part_text_for_sidecar(segments)
             last_segment_pause_seconds = pause_seconds
             pending_pause_samples: int | None = None
             crossfade_samples = self._crossfade_samples()
@@ -604,6 +705,18 @@ class KokoroState:
                         part_audio = crossfade_join(part_audio, audio_tensor, crossfade_samples)
                     else:
                         if pending_pause_samples:
+                            pause_fade_samples = self._pause_edge_fade_samples(
+                                pending_pause_samples
+                            )
+                            if pause_fade_samples > 0:
+                                part_audio = self._apply_edge_fade_samples(
+                                    part_audio,
+                                    fade_out_samples=pause_fade_samples,
+                                )
+                                audio_tensor = self._apply_edge_fade_samples(
+                                    audio_tensor,
+                                    fade_in_samples=pause_fade_samples,
+                                )
                             pause_tensor = self._pause_tensor(pending_pause_samples)
                             if pause_tensor is not None:
                                 part_audio = torch.cat([part_audio, pause_tensor])
@@ -626,6 +739,10 @@ class KokoroState:
                         postfx_settings=self.postfx_settings,
                     )
                     saved_paths.append(saved_path)
+                    try:
+                        self.audio_writer.save_text_sidecar(saved_path, part_text)
+                    except Exception:
+                        self.logger.exception("Failed to save sidecar text: %s", saved_path)
                 except Exception:
                     self.logger.exception("Failed to save output: %s", output_path)
             combined_segments.append(part_audio)
@@ -670,7 +787,9 @@ class KokoroState:
             use_gpu = self.cuda_available
         base_speed = speed
         base_pause_seconds = pause_seconds
-        style_preset, speed, pause_seconds = resolve_style_runtime(style_preset, speed, pause_seconds)
+        style_preset, speed, pause_seconds = resolve_style_runtime(
+            style_preset, speed, pause_seconds
+        )
         parts = self._prepare_dialogue_parts(
             text,
             voice,
@@ -704,112 +823,70 @@ class KokoroState:
                     )
                     if segment.pause_seconds is not None:
                         segment_pause_seconds = segment.pause_seconds
-                    keep_sentences = segment_pause_seconds > 0
                     segment_pause_samples = max(0, int(segment_pause_seconds * SAMPLE_RATE))
                     pause_audio = self._pause_audio_numpy(segment_pause_samples)
-                    segment_voice = segment.voice
-                    sentences = smart_split(
-                        segment.text,
-                        self.max_chunk_chars,
-                        keep_sentences=keep_sentences,
+                    sentence_groups = self._sentence_chunk_groups(
+                        segment.text, segment_pause_seconds
                     )
-                    if self._is_ru_voice(segment_voice):
-                        manager = self._require_silero_manager()
-                        target_voice = self._primary_voice_id(segment_voice)
-                        if use_gpu and getattr(manager, "cpu_only", True) and not self._ru_cpu_notice_logged:
-                            self.logger.info(
-                                "Russian Silero backend is CPU-first; ignoring GPU selection for ru voices."
-                            )
-                            self._ru_cpu_notice_logged = True
-                        for sentence_index, sentence in enumerate(sentences):
-                            sentence = sentence.strip()
-                            if not sentence:
-                                continue
-                            audio = manager.synthesize(
-                                sentence,
-                                voice_id=target_voice,
-                                sample_rate=SAMPLE_RATE,
-                            )
-                            if hasattr(audio, "detach"):
-                                audio = audio.detach().cpu().flatten()
-                            else:
-                                audio = torch.as_tensor(audio).detach().cpu().flatten()
-                            if audio.numel() == 0:
-                                continue
-                            segment_index += 1
-                            if self.logger.isEnabledFor(logging.DEBUG) and (
-                                segment_index == 1 or segment_index % self.log_segment_every == 0
-                            ):
-                                self.logger.debug(
-                                    "Stream segment=%s tokens=%s",
-                                    segment_index,
-                                    len(sentence),
-                                )
-                            yield SAMPLE_RATE, audio.numpy()
-                            if first:
-                                first = False
-                                yield SAMPLE_RATE, torch.zeros(1).numpy()
-                            if pause_audio is not None:
-                                has_next_sentence = sentence_index < len(sentences) - 1
-                                has_next_segment = segment_idx < len(segments) - 1
-                                has_next_part = part_index < len(parts) - 1
-                                if has_next_sentence or has_next_segment or has_next_part:
-                                    yield SAMPLE_RATE, pause_audio
-                        continue
+                    segment_voice = segment.voice
                     pipeline = self.model_manager.get_pipeline(segment_voice)
                     pack = self.model_manager.get_voice_pack(segment_voice)
                     if not use_gpu and model_cpu is None:
                         model_cpu = self.model_manager.get_model(False)
-                    for sentence_index, sentence in enumerate(sentences):
-                        iterator = iter(
-                            self._run_pipeline(
-                                sentence,
-                                segment_voice,
-                                segment_speed,
-                                segment_style,
-                                pipeline,
-                            )
-                        )
-                        current = next(iterator, None)
-                        while current is not None:
-                            _, ps, _ = current
-                            segment_index += 1
-                            if self.logger.isEnabledFor(logging.DEBUG) and (
-                                segment_index == 1 or segment_index % self.log_segment_every == 0
-                            ):
-                                self.logger.debug(
-                                    "Stream segment=%s tokens=%s",
-                                    segment_index,
-                                    len(ps),
+                    for sentence_index, sentence_chunks in enumerate(sentence_groups):
+                        sentence_emitted = False
+                        for sentence in sentence_chunks:
+                            iterator = iter(
+                                self._run_pipeline(
+                                    sentence,
+                                    segment_voice,
+                                    segment_speed,
+                                    segment_style,
+                                    pipeline,
                                 )
-                            ref_s = pack[len(ps) - 1]
-                            try:
-                                if use_gpu:
-                                    audio = self._forward_gpu(ps, ref_s, segment_speed)
-                                else:
-                                    audio = model_cpu(ps, ref_s, segment_speed)
-                            except Exception as exc:
-                                if self._is_ui_error(exc):
-                                    if use_gpu and self.ui_hooks:
-                                        self.ui_hooks.warn(str(exc))
-                                        self.ui_hooks.info("Switching to CPU")
-                                        audio = self.model_manager.get_model(False)(
-                                            ps,
-                                            ref_s,
-                                            segment_speed,
-                                        )
-                                    else:
-                                        raise self._raise_ui_error(exc)
-                                else:
-                                    raise
-                            audio = audio.detach().cpu()
-                            yield SAMPLE_RATE, audio.numpy()
-                            if first:
-                                first = False
-                                yield SAMPLE_RATE, torch.zeros(1).numpy()
+                            )
                             current = next(iterator, None)
-                        if pause_audio is not None:
-                            has_next_sentence = sentence_index < len(sentences) - 1
+                            while current is not None:
+                                _, ps, _ = current
+                                segment_index += 1
+                                if self.logger.isEnabledFor(logging.DEBUG) and (
+                                    segment_index == 1
+                                    or segment_index % self.log_segment_every == 0
+                                ):
+                                    self.logger.debug(
+                                        "Stream segment=%s tokens=%s",
+                                        segment_index,
+                                        len(ps),
+                                    )
+                                ref_s = pack[len(ps) - 1]
+                                try:
+                                    if use_gpu:
+                                        audio = self._forward_gpu(ps, ref_s, segment_speed)
+                                    else:
+                                        audio = model_cpu(ps, ref_s, segment_speed)
+                                except Exception as exc:
+                                    if self._is_ui_error(exc):
+                                        if use_gpu and self.ui_hooks:
+                                            self.ui_hooks.warn(str(exc))
+                                            self.ui_hooks.info("Switching to CPU")
+                                            audio = self.model_manager.get_model(False)(
+                                                ps,
+                                                ref_s,
+                                                segment_speed,
+                                            )
+                                        else:
+                                            raise self._raise_ui_error(exc)
+                                    else:
+                                        raise
+                                audio = audio.detach().cpu()
+                                yield SAMPLE_RATE, audio.numpy()
+                                if first:
+                                    first = False
+                                    yield SAMPLE_RATE, torch.zeros(1).numpy()
+                                sentence_emitted = True
+                                current = next(iterator, None)
+                        if pause_audio is not None and sentence_emitted:
+                            has_next_sentence = sentence_index < len(sentence_groups) - 1
                             has_next_segment = segment_idx < len(segments) - 1
                             has_next_part = part_index < len(parts) - 1
                             if has_next_sentence or has_next_segment or has_next_part:

@@ -105,40 +105,6 @@ for lang in languages:
 import app
 print("app import: OK")
 
-ru_enabled = os.getenv("RU_TTS_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
-if ru_enabled:
-    try:
-        from kokoro_tts.integrations.silero_manager import SileroManager
-
-        ru_model_id = os.getenv("RU_TTS_MODEL_ID", "v5_cis_base")
-        ru_cache_dir = os.getenv("RU_TTS_CACHE_DIR", "data/cache/torch")
-        ru_cpu_only = os.getenv("RU_TTS_CPU_ONLY", "1").strip().lower() in ("1", "true", "yes", "on")
-        silero_manager = SileroManager(
-            model_id=ru_model_id,
-            cache_dir=ru_cache_dir,
-            cpu_only=ru_cpu_only,
-            sample_rate=24000,
-        )
-        ru_voices = silero_manager.discover_voice_items()
-        if ru_voices:
-            probe_voice = ru_voices[0][1]
-            probe_text = "\u041f\u0440\u0438\u0432\u0435\u0442."
-            audio = silero_manager.synthesize(
-                probe_text,
-                voice_id=probe_voice,
-                sample_rate=24000,
-            )
-            samples = int(getattr(audio, "numel", lambda: len(audio))())
-            print(f"[OK] lang=r voices={len(ru_voices)} sample_voice={probe_voice} samples={samples}")
-        else:
-            failed.append(("r", "No Russian voices discovered"))
-            print("[FAIL] lang=r: No Russian voices discovered")
-    except Exception as exc:
-        failed.append(("r", str(exc)))
-        print(f"[FAIL] lang=r: {exc}")
-else:
-    print("[SKIP] lang=r: RU_TTS_ENABLED is disabled")
-
 if failed:
     raise SystemExit("Language initialization failures detected")
 '@ | & $venvPython -

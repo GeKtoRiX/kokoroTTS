@@ -1,4 +1,5 @@
 """Model and pipeline management for Kokoro."""
+
 from __future__ import annotations
 
 import threading
@@ -77,14 +78,31 @@ class ModelManager:
             variants.add(lowered)
         return {entry for entry in variants if entry}
 
+    def _pipeline_lexicon_golds(self, lang_code: str, pipeline: KPipeline) -> dict[str, str] | None:
+        g2p = getattr(pipeline, "g2p", None)
+        lexicon = getattr(g2p, "lexicon", None)
+        golds = getattr(lexicon, "golds", None)
+        if isinstance(golds, dict):
+            return golds
+        self.logger.debug(
+            "Skipping pronunciation lexicon overrides: language=%s has no writable lexicon",
+            lang_code,
+        )
+        return None
+
     def _apply_pronunciation_rules_to_pipeline(
         self,
         lang_code: str,
         pipeline: KPipeline,
     ) -> None:
+        golds = self._pipeline_lexicon_golds(lang_code, pipeline)
+        if golds is None:
+            self._applied_pronunciation_keys.pop(lang_code, None)
+            return
+
         defaults = self._default_lexicon_entries(lang_code)
         for word, phoneme in defaults.items():
-            pipeline.g2p.lexicon.golds[word] = phoneme
+            golds[word] = phoneme
 
         lang_rules = self.pronunciation_rules.get(lang_code, {})
         desired: dict[str, str] = {}
@@ -95,11 +113,11 @@ class ModelManager:
         previous = self._applied_pronunciation_keys.get(lang_code, set())
         removable = previous - set(desired) - set(defaults)
         for word in removable:
-            if word in pipeline.g2p.lexicon.golds:
-                del pipeline.g2p.lexicon.golds[word]
+            if word in golds:
+                del golds[word]
 
         for word, phoneme in desired.items():
-            pipeline.g2p.lexicon.golds[word] = phoneme
+            golds[word] = phoneme
         self._applied_pronunciation_keys[lang_code] = set(desired)
 
         self.logger.debug(

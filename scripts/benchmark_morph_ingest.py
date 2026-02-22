@@ -64,8 +64,7 @@ def _expression_extractor(_text: str) -> list[dict[str, object]]:
 def _build_parts(part_count: int, segments_per_part: int, tokens_per_segment: int):
     segment_text = _build_text(tokens_per_segment)
     return [
-        [("af_heart", segment_text) for _ in range(segments_per_part)]
-        for _ in range(part_count)
+        [("af_heart", segment_text) for _ in range(segments_per_part)] for _ in range(part_count)
     ]
 
 

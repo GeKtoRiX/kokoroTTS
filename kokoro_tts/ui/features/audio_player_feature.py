@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -22,6 +26,7 @@ from .audio_player_state import (
 sd = None
 vlc = None
 sf = None
+_DOUBLE_SPACE_STOP_WINDOW_SECONDS = 0.35
 
 
 def configure_runtime_modules(*, sd_module, vlc_module, sf_module, filedialog_module) -> None:
@@ -38,10 +43,10 @@ def configure_runtime_modules(*, sd_module, vlc_module, sf_module, filedialog_mo
 class AudioPlayerFeature:
     """Audio player and history playback behavior."""
 
-    _INTERNAL_ATTRS = {'_host', '_INTERNAL_ATTRS'}
+    _INTERNAL_ATTRS = {"_host", "_INTERNAL_ATTRS"}
 
     def __init__(self, host) -> None:
-        object.__setattr__(self, '_host', host)
+        object.__setattr__(self, "_host", host)
 
     def __getattribute__(self, name: str):
         if name in object.__getattribute__(self, "_INTERNAL_ATTRS"):
@@ -56,14 +61,13 @@ class AudioPlayerFeature:
         return object.__getattribute__(self, name)
 
     def __getattr__(self, name: str):
-        return getattr(object.__getattribute__(self, '_host'), name)
+        return getattr(object.__getattribute__(self, "_host"), name)
 
     def __setattr__(self, name: str, value):
-        if name in object.__getattribute__(self, '_INTERNAL_ATTRS'):
+        if name in object.__getattribute__(self, "_INTERNAL_ATTRS"):
             object.__setattr__(self, name, value)
             return
-        setattr(object.__getattribute__(self, '_host'), name, value)
-
+        setattr(object.__getattribute__(self, "_host"), name, value)
 
     def _stop_audio(self, *, preserve_player_position: bool = True) -> None:
         if self.vlc_audio is not None:
@@ -78,7 +82,9 @@ class AudioPlayerFeature:
 
         if preserve_player_position:
             current_seconds = self._audio_player_current_seconds()
-            self.audio_player_current_frame = int(current_seconds * float(max(self.audio_player_sample_rate, 1)))
+            self.audio_player_current_frame = int(
+                current_seconds * float(max(self.audio_player_sample_rate, 1))
+            )
         if self.audio_player_is_playing:
             self.audio_player_is_playing = False
             self.audio_player_is_paused = bool(preserve_player_position)
@@ -126,11 +132,170 @@ class AudioPlayerFeature:
         self._threaded(work, on_success)
 
     def _on_history_select_autoplay(self) -> None:
+        if self.history_listbox is None:
+            return
+        selected = self.history_listbox.curselection()
+        if len(selected) != 1:
+            return
         selected_item = self._selected_history_item(show_errors=False)
         if selected_item is None:
             return
         index, target = selected_item
         self._load_audio_file_async(target, autoplay=True, history_index=index)
+
+    def _on_history_delete_selected(self) -> None:
+        if self.history_listbox is None:
+            return
+        selected_indices = sorted(
+            {
+                int(index)
+                for index in self.history_listbox.curselection()
+                if 0 <= int(index) < len(self.history_state)
+            }
+        )
+        if not selected_indices:
+            self.generate_status_var.set("Select one or more history items first.")
+            return
+        if self.history_service is None:
+            selected_set = set(selected_indices)
+            self.history_state = [
+                value for index, value in enumerate(self.history_state) if index not in selected_set
+            ]
+            self.audio_player_queue_index = None
+            self._render_history()
+            self.generate_status_var.set(
+                f"Deleted {len(selected_indices)} selected history item(s)."
+            )
+            self._save_audio_player_state()
+            return
+
+        removed_count = len(selected_indices)
+
+        def work():
+            if callable(getattr(self.history_service, "remove_selected_history", None)):
+                return self.history_service.remove_selected_history(
+                    self.history_state, selected_indices
+                )
+            selected_set = set(selected_indices)
+            return [
+                value for index, value in enumerate(self.history_state) if index not in selected_set
+            ]
+
+        def on_success(updated: list[str]) -> None:
+            self.history_state = list(updated or [])
+            if self.audio_player_loaded_path is None:
+                self.audio_player_queue_index = None
+            else:
+                self.audio_player_queue_index = self._find_history_index(
+                    self.audio_player_loaded_path
+                )
+            self._render_history()
+            self.generate_status_var.set(f"Deleted {removed_count} selected history item(s).")
+            self._save_audio_player_state()
+
+        self._threaded(work, on_success)
+
+    def _on_history_context_menu(self, event: tk.Event[Any]) -> str:
+        if self.history_listbox is None:
+            return "break"
+        try:
+            index = int(self.history_listbox.nearest(event.y))
+        except Exception:
+            index = -1
+        if index < 0 or index >= len(self.history_state):
+            return "break"
+        try:
+            already_selected = bool(self.history_listbox.selection_includes(index))
+        except Exception:
+            already_selected = False
+        if not already_selected:
+            self._select_history_index(index)
+        self.history_context_index = index
+        if self.root is None:
+            return "break"
+        if self.history_context_menu is None:
+            create_styled_menu = getattr(self, "_create_styled_menu", None)
+            style_popup_menu = getattr(self, "_style_popup_menu", None)
+            if callable(create_styled_menu):
+                try:
+                    self.history_context_menu = create_styled_menu(self.root)
+                except Exception:
+                    self.history_context_menu = tk.Menu(self.root, tearoff=0)
+            else:
+                self.history_context_menu = tk.Menu(self.root, tearoff=0)
+                if callable(style_popup_menu):
+                    try:
+                        style_popup_menu(self.history_context_menu)
+                    except Exception:
+                        pass
+            self.history_context_menu.add_command(
+                label="Delete selected",
+                command=self._on_history_delete_selected,
+            )
+            self.history_context_menu.add_separator()
+            self.history_context_menu.add_command(
+                label="Open Containing Folder",
+                command=self._on_history_open_selected_folder,
+            )
+        try:
+            self.history_context_menu.tk_popup(int(event.x_root), int(event.y_root))
+        finally:
+            try:
+                self.history_context_menu.grab_release()
+            except Exception:
+                pass
+        return "break"
+
+    def _on_history_open_selected_folder(self) -> None:
+        index = self.history_context_index
+        if index is None:
+            selected_item = self._selected_history_item(show_errors=True)
+            if selected_item is None:
+                return
+            index, _target = selected_item
+        if index < 0 or index >= len(self.history_state):
+            self.generate_status_var.set("Selected history item is out of range.")
+            return
+        target = Path(self.history_state[index])
+        if not target.exists():
+            self.generate_status_var.set("History file does not exist.")
+            return
+        folder = target.parent
+        if not folder.exists():
+            self.generate_status_var.set("History folder does not exist.")
+            return
+        try:
+            self._open_path_in_file_manager(folder)
+            self.generate_status_var.set(f"Opened folder: {folder}")
+        except Exception:
+            self.logger.exception("Failed to open history folder: %s", folder)
+            self.generate_status_var.set(f"Failed to open folder: {folder}")
+
+    @staticmethod
+    def _open_path_in_file_manager(path: Path) -> None:
+        folder_path = Path(path).resolve()
+        if not folder_path.exists() or not folder_path.is_dir():
+            raise FileNotFoundError(f"Folder does not exist: {folder_path}")
+        folder = str(folder_path)
+        if sys.platform.startswith("win"):
+            if hasattr(os, "startfile"):
+                os.startfile(folder)  # type: ignore[attr-defined]
+            else:
+                explorer = shutil.which("explorer.exe") or shutil.which("explorer")
+                if not explorer:
+                    raise FileNotFoundError("Windows Explorer executable was not found.")
+                subprocess.Popen([explorer, folder])
+            return
+        if sys.platform == "darwin":
+            open_cmd = shutil.which("open")
+            if not open_cmd:
+                raise FileNotFoundError("macOS open executable was not found.")
+            subprocess.Popen([open_cmd, folder])
+            return
+        xdg_open_cmd = shutil.which("xdg-open")
+        if not xdg_open_cmd:
+            raise FileNotFoundError("xdg-open executable was not found.")
+        subprocess.Popen([xdg_open_cmd, folder])
 
     def _on_history_double_click(self, event: tk.Event[Any]) -> None:
         if self.history_listbox is None:
@@ -256,7 +421,10 @@ class AudioPlayerFeature:
                     waveform_warning = str(exc)
 
             self._run_on_ui(
-                lambda waveform_audio=waveform_audio, sample_rate=sample_rate, total_frames=total_frames, waveform_warning=waveform_warning: self._on_audio_file_loaded(
+                lambda waveform_audio=waveform_audio,
+                sample_rate=sample_rate,
+                total_frames=total_frames,
+                waveform_warning=waveform_warning: self._on_audio_file_loaded(
                     path=path,
                     waveform_audio=waveform_audio,
                     sample_rate=int(sample_rate),
@@ -298,7 +466,9 @@ class AudioPlayerFeature:
             self.audio_player_total_frames = 0
             self.audio_player_waveform = None
             self._audio_player_redraw_waveform()
-        self.audio_player_queue_index = history_index if history_index is not None else self._find_history_index(path)
+        self.audio_player_queue_index = (
+            history_index if history_index is not None else self._find_history_index(path)
+        )
         if self.audio_player_queue_index is not None:
             self._select_history_index(self.audio_player_queue_index)
         self.audio_player_media_length_ms = 0
@@ -330,9 +500,13 @@ class AudioPlayerFeature:
                 self.audio_player_sample_rate = 1000
                 self.audio_player_total_frames = int(total_seconds * 1000.0)
             restore_seconds = min(restore_seconds, total_seconds)
-        self.audio_player_current_frame = int(restore_seconds * float(max(self.audio_player_sample_rate, 1)))
+        self.audio_player_current_frame = int(
+            restore_seconds * float(max(self.audio_player_sample_rate, 1))
+        )
         if self.audio_player_total_frames > 0:
-            self.audio_player_current_frame = max(0, min(self.audio_player_total_frames, self.audio_player_current_frame))
+            self.audio_player_current_frame = max(
+                0, min(self.audio_player_total_frames, self.audio_player_current_frame)
+            )
         self._audio_player_update_progress()
         duration_s = self._audio_player_total_seconds()
         resume_text = ""
@@ -352,7 +526,9 @@ class AudioPlayerFeature:
     def _ensure_vlc_player(self) -> bool:
         assert self.audio_player_status_var is not None
         if vlc is None:
-            self.audio_player_status_var.set("python-vlc is not installed. Install dependencies to enable Audio player.")
+            self.audio_player_status_var.set(
+                "python-vlc is not installed. Install dependencies to enable Audio player."
+            )
             return False
         if self.vlc_audio is None:
             try:
@@ -379,7 +555,9 @@ class AudioPlayerFeature:
         try:
             assert self.vlc_audio is not None
             self.vlc_audio.load(str(path))
-            volume = self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5)
+            volume = self._coerce_float(
+                self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5
+            )
             self.vlc_audio.set_volume(int(round(volume * 100.0)))
             self.audio_player_media_length_ms = 0
         except Exception as exc:
@@ -399,7 +577,9 @@ class AudioPlayerFeature:
             return
         if not self._audio_player_start_playback(self.audio_player_current_frame):
             return
-        total_stamp = self._audio_player_format_timestamp(self._audio_player_total_seconds(refresh=True))
+        total_stamp = self._audio_player_format_timestamp(
+            self._audio_player_total_seconds(refresh=True)
+        )
         self.audio_player_status_var.set(
             f"Playing {self.audio_player_loaded_path.name} ({total_stamp})."
         )
@@ -422,7 +602,9 @@ class AudioPlayerFeature:
             return False
         start_seconds = float(frame) / float(max(self.audio_player_sample_rate, 1))
         target_ms = int(max(0.0, start_seconds * 1000.0))
-        volume = self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5)
+        volume = self._coerce_float(
+            self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5
+        )
         try:
             assert self.vlc_audio is not None
             self.vlc_audio.set_volume(int(round(volume * 100.0)))
@@ -431,7 +613,9 @@ class AudioPlayerFeature:
                 # VLC may ignore immediate seek until playback thread is ready.
                 self.vlc_audio.set_time_ms(target_ms)
                 if self.root is not None:
-                    self.root.after(140, lambda target_ms=target_ms: self._audio_player_seek_vlc_ms(target_ms))
+                    self.root.after(
+                        140, lambda target_ms=target_ms: self._audio_player_seek_vlc_ms(target_ms)
+                    )
         except Exception as exc:
             self.logger.exception("Audio player playback failed")
             if self._audio_player_can_use_sounddevice():
@@ -451,7 +635,11 @@ class AudioPlayerFeature:
         return True
 
     def _audio_player_can_use_sounddevice(self) -> bool:
-        return sd is not None and self.audio_player_pcm_data is not None and self.audio_player_sample_rate > 0
+        return (
+            sd is not None
+            and self.audio_player_pcm_data is not None
+            and self.audio_player_sample_rate > 0
+        )
 
     def _audio_player_start_playback_sounddevice(self, frame: int) -> bool:
         assert self.audio_player_status_var is not None
@@ -472,7 +660,9 @@ class AudioPlayerFeature:
         if chunk.size == 0:
             self.audio_player_status_var.set("Nothing to play.")
             return False
-        volume = self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5)
+        volume = self._coerce_float(
+            self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5
+        )
         prepared = np.asarray(chunk, dtype=np.float32)
         if abs(volume - 1.0) > 1e-6:
             prepared = np.clip(prepared * float(volume), -1.0, 1.0)
@@ -516,7 +706,9 @@ class AudioPlayerFeature:
                 sd.stop()
             except Exception:
                 self.logger.exception("Failed to pause sounddevice playback")
-        self.audio_player_current_frame = int(self._audio_player_current_seconds() * float(max(self.audio_player_sample_rate, 1)))
+        self.audio_player_current_frame = int(
+            self._audio_player_current_seconds() * float(max(self.audio_player_sample_rate, 1))
+        )
         self.audio_player_is_playing = False
         self.audio_player_is_paused = True
         self._audio_player_cancel_tick()
@@ -596,7 +788,9 @@ class AudioPlayerFeature:
         )
         if self.audio_player_total_frames <= 0 and total_seconds > 0:
             self.audio_player_sample_rate = max(1, self.audio_player_sample_rate)
-            self.audio_player_total_frames = int(total_seconds * float(self.audio_player_sample_rate))
+            self.audio_player_total_frames = int(
+                total_seconds * float(self.audio_player_sample_rate)
+            )
         target_frame = int(clamped_seconds * float(max(self.audio_player_sample_rate, 1)))
         if self.audio_player_total_frames > 0:
             target_frame = max(0, min(self.audio_player_total_frames, target_frame))
@@ -668,9 +862,13 @@ class AudioPlayerFeature:
             if self.audio_player_total_frames <= 0:
                 self.audio_player_sample_rate = 1000
                 self.audio_player_total_frames = int(total_seconds * 1000.0)
-            self.audio_player_current_frame = int(ratio * float(max(1, self.audio_player_total_frames)))
+            self.audio_player_current_frame = int(
+                ratio * float(max(1, self.audio_player_total_frames))
+            )
         else:
-            self.audio_player_current_frame = int(current_seconds * float(max(self.audio_player_sample_rate, 1)))
+            self.audio_player_current_frame = int(
+                current_seconds * float(max(self.audio_player_sample_rate, 1))
+            )
         self._audio_player_update_progress()
         state = None
         if self.vlc_audio is not None:
@@ -691,7 +889,9 @@ class AudioPlayerFeature:
                 return
             if self.audio_player_status_var is not None:
                 if self.audio_player_loaded_path is not None:
-                    self.audio_player_status_var.set(f"Playback complete: {self.audio_player_loaded_path.name}")
+                    self.audio_player_status_var.set(
+                        f"Playback complete: {self.audio_player_loaded_path.name}"
+                    )
                 else:
                     self.audio_player_status_var.set("Playback complete.")
             self._update_audio_player_buttons()
@@ -717,7 +917,8 @@ class AudioPlayerFeature:
             self.audio_player_sample_rate = 1000
             self.audio_player_total_frames = int(total_seconds * 1000.0)
         self.audio_player_current_frame = int(
-            max(0.0, min(1.0, current_seconds / max(total_seconds, 0.001))) * float(max(1, self.audio_player_total_frames))
+            max(0.0, min(1.0, current_seconds / max(total_seconds, 0.001)))
+            * float(max(1, self.audio_player_total_frames))
         )
         if self.audio_player_seek_scale is not None:
             self.audio_player_seek_scale.configure(to=max(0.001, total_seconds))
@@ -735,18 +936,30 @@ class AudioPlayerFeature:
     def _update_audio_player_buttons(self) -> None:
         loaded = self.audio_player_loaded_path is not None
         if self.audio_player_play_btn is not None:
-            self.audio_player_play_btn.state(["!disabled"] if loaded and not self.audio_player_is_playing else ["disabled"])
+            self.audio_player_play_btn.state(
+                ["!disabled"] if loaded and not self.audio_player_is_playing else ["disabled"]
+            )
         if self.audio_player_pause_btn is not None:
-            self.audio_player_pause_btn.state(["!disabled"] if self.audio_player_is_playing else ["disabled"])
+            self.audio_player_pause_btn.state(
+                ["!disabled"] if self.audio_player_is_playing else ["disabled"]
+            )
         if self.audio_player_stop_btn is not None:
-            can_stop = loaded and (self.audio_player_is_playing or self.audio_player_is_paused or self.audio_player_current_frame > 0)
+            can_stop = loaded and (
+                self.audio_player_is_playing
+                or self.audio_player_is_paused
+                or self.audio_player_current_frame > 0
+            )
             self.audio_player_stop_btn.state(["!disabled"] if can_stop else ["disabled"])
 
     def _on_audio_player_minimal_toggle(self) -> None:
         self._apply_audio_player_minimal_mode()
 
     def _apply_audio_player_minimal_mode(self) -> None:
-        minimal = bool(self.audio_player_minimal_var.get()) if self.audio_player_minimal_var is not None else False
+        minimal = (
+            bool(self.audio_player_minimal_var.get())
+            if self.audio_player_minimal_var is not None
+            else False
+        )
         managed_frames = (
             self.audio_player_track_frame,
             self.audio_player_controls_frame,
@@ -761,14 +974,19 @@ class AudioPlayerFeature:
                 frame.grid_remove()
             else:
                 frame.grid()
-        if self.audio_player_waveform_frame is not None and self.audio_player_waveform_frame.winfo_exists():
+        if (
+            self.audio_player_waveform_frame is not None
+            and self.audio_player_waveform_frame.winfo_exists()
+        ):
             self.audio_player_waveform_frame.grid_configure(pady=(6, 4) if minimal else (8, 6))
         if self.audio_player_seek_frame is not None and self.audio_player_seek_frame.winfo_exists():
             self.audio_player_seek_frame.grid_configure(pady=(0, 6) if minimal else (6, 6))
 
     def _sync_audio_player_control_labels(self) -> None:
         assert self.audio_player_volume_var is not None
-        volume = self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5)
+        volume = self._coerce_float(
+            self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5
+        )
         if self.audio_player_volume_value_label is not None:
             percent = int(round(volume * 100.0))
             self.audio_player_volume_value_label.configure(text=f"{percent:>3d}%")
@@ -777,7 +995,9 @@ class AudioPlayerFeature:
         self._sync_audio_player_control_labels()
         if self.vlc_audio is not None and self.audio_player_volume_var is not None:
             try:
-                volume = self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5)
+                volume = self._coerce_float(
+                    self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5
+                )
                 self.vlc_audio.set_volume(int(round(volume * 100.0)))
             except Exception:
                 self.logger.exception("Failed to update VLC volume")
@@ -902,7 +1122,9 @@ class AudioPlayerFeature:
             and self.audio_player_sd_started_at > 0.0
         ):
             elapsed = max(0.0, time.monotonic() - self.audio_player_sd_started_at)
-            current_frame = self.audio_player_sd_start_frame + int(elapsed * float(self.audio_player_sample_rate))
+            current_frame = self.audio_player_sd_start_frame + int(
+                elapsed * float(self.audio_player_sample_rate)
+            )
             if self.audio_player_total_frames > 0:
                 current_frame = min(self.audio_player_total_frames, current_frame)
             return float(current_frame) / float(self.audio_player_sample_rate)
@@ -922,28 +1144,89 @@ class AudioPlayerFeature:
         self.root.bind_all("<space>", self._on_audio_shortcut_play_pause, add="+")
         self.root.bind_all(
             "<Control-Left>",
-            lambda event: self._on_audio_shortcut_seek(event, -float(self.audio_player_seek_step_seconds)),
+            lambda event: self._on_audio_shortcut_seek(
+                event, -float(self.audio_player_seek_step_seconds)
+            ),
             add="+",
         )
         self.root.bind_all(
             "<Control-Right>",
-            lambda event: self._on_audio_shortcut_seek(event, float(self.audio_player_seek_step_seconds)),
+            lambda event: self._on_audio_shortcut_seek(
+                event, float(self.audio_player_seek_step_seconds)
+            ),
             add="+",
         )
-        self.root.bind_all("<Control-Up>", lambda event: self._on_audio_shortcut_volume(event, 0.05), add="+")
-        self.root.bind_all("<Control-Down>", lambda event: self._on_audio_shortcut_volume(event, -0.05), add="+")
+        self.root.bind_all(
+            "<Control-Up>", lambda event: self._on_audio_shortcut_volume(event, 0.05), add="+"
+        )
+        self.root.bind_all(
+            "<Control-Down>", lambda event: self._on_audio_shortcut_volume(event, -0.05), add="+"
+        )
+        for button in (
+            self.audio_player_play_btn,
+            self.audio_player_pause_btn,
+            self.audio_player_stop_btn,
+            self.audio_player_minimal_check_btn,
+            self.audio_player_auto_next_check_btn,
+        ):
+            if button is None:
+                continue
+            button.bind(
+                "<space>", self._on_audio_shortcut_play_pause_from_transport_button, add="+"
+            )
+            button.bind("<KeyRelease-space>", self._on_audio_shortcut_consume_key_release, add="+")
         self.audio_player_shortcuts_bound = True
+
+    def _on_audio_shortcut_play_pause_from_transport_button(self, event: tk.Event[Any]) -> str:
+        result = self._on_audio_shortcut_play_pause(event)
+        if result is None:
+            return "break"
+        return result
+
+    @staticmethod
+    def _on_audio_shortcut_consume_key_release(_event: tk.Event[Any]) -> str:
+        return "break"
 
     def _on_audio_shortcut_play_pause(self, event: tk.Event[Any]) -> str | None:
         if self._is_text_input_widget(getattr(event, "widget", None)):
             return None
+        if self.audio_player_loaded_path is None:
+            self.audio_player_last_space_pressed_at = 0.0
+            return None
+
+        now = float(time.monotonic())
+        stop_window = self._coerce_float(
+            getattr(
+                self,
+                "audio_player_double_space_stop_window_seconds",
+                _DOUBLE_SPACE_STOP_WINDOW_SECONDS,
+            ),
+            default=_DOUBLE_SPACE_STOP_WINDOW_SECONDS,
+            min_value=0.15,
+            max_value=1.5,
+        )
+        last_pressed = self._coerce_float(
+            getattr(self, "audio_player_last_space_pressed_at", 0.0),
+            default=0.0,
+            min_value=0.0,
+        )
+        self.audio_player_last_space_pressed_at = now
+        elapsed = now - last_pressed
+        can_stop = (
+            self.audio_player_is_playing
+            or self.audio_player_is_paused
+            or self.audio_player_current_frame > 0
+        )
+        if can_stop and last_pressed > 0.0 and 0.0 < elapsed <= stop_window:
+            self.audio_player_last_space_pressed_at = 0.0
+            self._on_audio_player_stop()
+            return "break"
+
         if self.audio_player_is_playing:
             self._on_audio_player_pause()
             return "break"
-        if self.audio_player_loaded_path is not None:
-            self._on_audio_player_play()
-            return "break"
-        return None
+        self._on_audio_player_play()
+        return "break"
 
     def _on_audio_shortcut_seek(self, event: tk.Event[Any], delta_seconds: float) -> str | None:
         if self._is_text_input_widget(getattr(event, "widget", None)):
@@ -958,8 +1241,12 @@ class AudioPlayerFeature:
             return None
         if self.audio_player_volume_var is None:
             return None
-        current = self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5)
-        updated = self._coerce_float(current + float(delta), default=1.0, min_value=0.0, max_value=1.5)
+        current = self._coerce_float(
+            self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5
+        )
+        updated = self._coerce_float(
+            current + float(delta), default=1.0, min_value=0.0, max_value=1.5
+        )
         self.audio_player_volume_var.set(updated)
         self._save_audio_player_state()
         return "break"
@@ -975,11 +1262,10 @@ class AudioPlayerFeature:
         return class_name in {
             "entry",
             "tentry",
+            "ttk::entry",
             "text",
             "spinbox",
-            "listbox",
-            "ttk::combobox",
-            "combobox",
+            "ttk::spinbox",
         }
 
     def _restore_audio_player_from_saved_state(self) -> None:
@@ -1006,9 +1292,13 @@ class AudioPlayerFeature:
             return
         last_position_seconds = max(0.0, float(self._audio_player_current_seconds()))
         state = {
-            "volume": self._coerce_float(self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5),
+            "volume": self._coerce_float(
+                self.audio_player_volume_var.get(), default=1.0, min_value=0.0, max_value=1.5
+            ),
             "auto_next": bool(self.audio_player_auto_next_var.get()),
-            "last_path": str(self.audio_player_loaded_path) if self.audio_player_loaded_path is not None else "",
+            "last_path": str(self.audio_player_loaded_path)
+            if self.audio_player_loaded_path is not None
+            else "",
             "last_position_seconds": last_position_seconds,
             "queue_index": self.audio_player_queue_index,
         }
@@ -1032,4 +1322,3 @@ class AudioPlayerFeature:
     @staticmethod
     def _coerce_bool(value: Any, *, default: bool) -> bool:
         return _coerce_bool_value(value, default=default)
-

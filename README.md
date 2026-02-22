@@ -4,8 +4,9 @@ Local Tkinter desktop app for `hexgrad/Kokoro-82M` with:
 - generate + stream modes
 - voice mix and inline dialogue tags
 - persistent pronunciation dictionary (JSON rules by language)
-- multilingual voices (Kokoro 9 languages + optional Russian Silero backend)
+- multilingual voices (Kokoro 9 languages)
 - history panel + file cleanup
+- built-in audio player (waveform seek, auto-next, minimal mode, keyboard shortcuts)
 - text normalization (time/number)
 - style presets (`neutral`, `narrator`, `energetic`)
 - output formats `wav/mp3/ogg` (ffmpeg fallback handling)
@@ -13,9 +14,15 @@ Local Tkinter desktop app for `hexgrad/Kokoro-82M` with:
 - optional audio post-processing for `generate_first` (`trim`, `fade`, `crossfade`, `loudnorm`)
 - morphology SQLite read-only preview tab
 
+## Architecture map
+
+- High-level map: `docs/PROJECT_MAP.md`
+- Generated artifacts: `docs/project-map/`
+- Regenerate: `.\.venv\Scripts\python.exe scripts\generate_project_map.py`
+
 ## Known issues
 
-- No known critical issues as of February 18, 2026.
+- No known critical issues as of February 22, 2026.
 
 ## Isolation rule
 
@@ -82,8 +89,8 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_full.ps1
 .\.venv\Scripts\python.exe scripts\check_english_lexemes.py --text "Look up the words, then run the tests." --json
 ```
 
-- `doctor.ps1` verifies `.venv`, package imports, tool paths, and `KPipeline` init for `a,b,e,f,h,i,j,p,z`; it also validates Russian Silero when `RU_TTS_ENABLED=1`.
-- `smoke_full.ps1` runs runtime checks for generate/stream/dialogue/mix/split/output formats/multilingual voices and conditionally checks Russian Silero.
+- `doctor.ps1` verifies `.venv`, package imports, tool paths, and `KPipeline` init for `a,b,e,f,h,i,j,p,z`.
+- `smoke_full.ps1` runs runtime checks for generate/stream/dialogue/mix/split/output formats/multilingual voices.
 - `check_english_lexemes.py` performs a real lexeme split smoke check for English text.
 
 ## Maintenance scripts (.bat)
@@ -114,7 +121,12 @@ Run checks:
 .\.venv\Scripts\ruff.exe check .
 .\.venv\Scripts\ruff.exe format --check .
 .\.venv\Scripts\mypy.exe
+.\.venv\Scripts\bandit.exe -q -r app.py kokoro_tts
+.\.venv\Scripts\pip-audit.exe -r requirements.txt
+.\.venv\Scripts\python.exe scripts\generate_project_map.py
 ```
+
+Test organization and targeted commands are described in `TESTING.md`.
 
 Synthetic ingest benchmark:
 
@@ -139,6 +151,7 @@ Create/edit `.env` (or start from `.env.example`):
 - `HF_TOKEN` (optional Hugging Face token for hub rate-limit mitigation)
 - `KOKORO_SKIP_APP_INIT` (test/diagnostic mode; skips full app initialization)
 - `OUTPUT_DIR` (default `outputs`)
+- `APP_STATE_PATH` (default `data/app_state.json`, shared desktop UI state file)
 - `MAX_CHUNK_CHARS` (default `500`)
 - `HISTORY_LIMIT` (default `5`)
 - `NORMALIZE_TIMES`, `NORMALIZE_NUMBERS`
@@ -149,10 +162,6 @@ Create/edit `.env` (or start from `.env.example`):
 - `LOG_EVERY_N_SEGMENTS`
 - `TORCH_NUM_THREADS`, `TORCH_NUM_INTEROP_THREADS` (`0` keeps torch defaults)
 - `TTS_PREWARM_ENABLED`, `TTS_PREWARM_ASYNC`, `TTS_PREWARM_VOICE`, `TTS_PREWARM_STYLE`
-- `RU_TTS_ENABLED` (`1` enables optional Russian Silero backend)
-- `RU_TTS_MODEL_ID` (default `v5_cis_base`)
-- `RU_TTS_CACHE_DIR` (default `data/cache/torch`; used as `TORCH_HOME`)
-- `RU_TTS_CPU_ONLY` (`1` keeps Russian generation CPU-first)
 - `MORPH_DB_ENABLED`, `MORPH_DB_PATH`, `MORPH_DB_TABLE_PREFIX`
 - `MORPH_LOCAL_EXPRESSIONS_ENABLED` (`0` by default; controls baseline local phrasal/idiom extractor setup)
 - `MORPH_ASYNC_INGEST` (`0` by default; optional background morphology DB writes)
@@ -177,6 +186,15 @@ Audio post-processing scope (current phase):
 - `trim`/`fade`/`crossfade` affect generated waveform in `generate_first`
 - loudness normalization uses ffmpeg `loudnorm` on saved files; if ffmpeg is unavailable or fails, output is kept without loudness normalization
 - in-memory return from `generate_first` is not loudness-normalized
+
+For explicit number-reading modes, use templates:
+- date-style year: `[date]1993` or `[date=2006]`
+- telephone-style digits: `[tnumber]0123411` or `[tnumber=1234567]`
+
+Examples:
+- `[date]1993` -> `nineteen ninety three`
+- `[date=2006]` -> `two thousand and six`
+- `[tnumber]0123411` -> `oh one two three four double one`
 
 When `MORPH_DB_ENABLED=1` and TTS-only mode is OFF (`TTS + Morphology`), `generate` and `stream`
 runs write English token analysis into SQLite:
@@ -226,8 +244,9 @@ Lexeme tagging cascade is:
 - Flair POS tagger (optional fallback for unresolved tags)
 - deterministic heuristics (`NUM`, `SYM`, `X`) as final fallback
 
-High-accuracy setup (recommended):
-- install `spacy-transformers` (already in `requirements.txt` for Python < 3.14)
+High-accuracy setup (optional):
+- install `spacy-transformers` manually when you need transformer-based spaCy models:
+  - `.\.venv\Scripts\python.exe -m pip install "spacy-transformers>=1.3,<2"`
 - download transformer model with `python -m spacy download en_core_web_trf`
 - set `MORPH_SPACY_MODELS=en_core_web_trf,en_core_web_lg,en_core_web_md,en_core_web_sm`
 
@@ -248,22 +267,17 @@ The app exposes the full Kokoro v1.0 voice set from `VOICES.md`:
 - `j` Japanese
 - `p` Brazilian Portuguese
 - `z` Mandarin Chinese
-- `r` Russian (optional, registered at runtime when Silero initializes successfully)
 
 UI includes a language selector that filters available voices. Inline `[voice=...]` tags still work per segment.
 
-## Russian backend (Silero)
+## UI productivity features
 
-Russian support is provided via an optional hybrid backend:
-- Kokoro remains the default engine for `a,b,e,f,h,i,j,p,z`.
-- Silero serves `r_*` voices (auto-discovered speakers from the selected Silero model).
-
-Current Russian behavior:
-- startup registration is controlled by `RU_TTS_ENABLED`
-- model is selected by `RU_TTS_MODEL_ID` (default `v5_cis_base`)
-- model cache path is controlled by `RU_TTS_CACHE_DIR`
-- runtime is CPU-first (`RU_TTS_CPU_ONLY=1`)
-- `tokenize_first(..., voice="r_*")` returns `[tokenization unavailable for silero]`
+- Generate input box supports `Ctrl+Z`/`Ctrl+Y` (undo/redo).
+- Right-click in the input box opens a context menu with quick voice-tag insertion (`[voice=...]`).
+- History list has a context menu for `Delete selected` and `Open Containing Folder`.
+- Audio player supports:
+  - hotkeys: `Space` (play/pause), double `Space` (stop), `Ctrl+Left/Right` (seek), `Ctrl+Up/Down` (volume)
+  - playback state restore (last file/position/volume/auto-next) from `APP_STATE_PATH` under `audio_player`.
 
 ## Style presets
 
@@ -292,5 +306,3 @@ Then recreate `.venv` with Python 3.12 and continue using project-local package 
 - `https://github.com/hexgrad/kokoro`
 - `https://huggingface.co/spaces/hexgrad/Kokoro-TTS/tree/main`
 - `https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md`
-- `https://github.com/snakers4/silero-models`
-- `https://pypi.org/project/silero/`

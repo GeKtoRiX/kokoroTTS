@@ -1,4 +1,5 @@
 """SQLite persistence for token morphology analysis."""
+
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -13,9 +14,6 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Sequence
-
-from ..domain.expressions import extract_english_expressions
-from ..domain.morphology import analyze_english_text
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +39,7 @@ POS_TABLE_COLUMNS: list[tuple[str, str]] = [
 ]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MorphRow:
     source: str
     part_index: int
@@ -58,7 +56,7 @@ class MorphRow:
     text_sha1: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ExpressionRow:
     source: str
     part_index: int
@@ -74,6 +72,43 @@ class ExpressionRow:
     match_source: str
     wordnet: int
     text_sha1: str
+
+
+@dataclass(frozen=True, slots=True)
+class _TokenTemplate:
+    token_index: int
+    token: str
+    lemma: str
+    upos: str
+    feats_json: str
+    start: int
+    end: int
+    key: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpressionTemplate:
+    expression_index: int
+    expression_text: str
+    expression_lemma: str
+    expression_type: str
+    start: int
+    end: int
+    expression_key: str
+    match_source: str
+    wordnet: int
+
+
+def _default_analyzer(text: str) -> dict[str, object]:
+    from ..domain.morphology import analyze_english_text
+
+    return analyze_english_text(text)
+
+
+def _default_expression_extractor(text: str) -> list[dict[str, object]]:
+    from ..domain.expressions import extract_english_expressions
+
+    return extract_english_expressions(text)
 
 
 class MorphologyRepository:
@@ -95,13 +130,20 @@ class MorphologyRepository:
         self.lexemes_table = f"{self.table_prefix}lexemes"
         self.occurrences_table = f"{self.table_prefix}token_occurrences"
         self.expressions_table = f"{self.table_prefix}expressions"
-        self.analyzer = analyzer or analyze_english_text
-        self.expression_extractor = expression_extractor or extract_english_expressions
+        self._allowed_tables = {
+            self.lexemes_table,
+            self.occurrences_table,
+            self.expressions_table,
+        }
+        self.analyzer = analyzer or _default_analyzer
+        self.expression_extractor = expression_extractor or _default_expression_extractor
         self._db_lock = threading.Lock()
         self._cache_lock = threading.Lock()
         self._segment_cache_size = max(0, int(segment_cache_size))
-        self._analysis_cache: OrderedDict[str, object] = OrderedDict()
-        self._expressions_cache: OrderedDict[str, object] = OrderedDict()
+        self._segment_templates_cache: OrderedDict[
+            str,
+            tuple[str, tuple[_TokenTemplate, ...], tuple[_ExpressionTemplate, ...]],
+        ] = OrderedDict()
         self._schema_ready = False
         if self.enabled and not self.db_path:
             self.logger.warning(
@@ -118,7 +160,7 @@ class MorphologyRepository:
 
         self._ensure_parent_dir()
         with self._db_lock:
-            connection = sqlite3.connect(self.db_path)
+            connection = self._open_connection()
             try:
                 with connection:
                     self._ensure_schema_with_connection(connection)
@@ -145,20 +187,21 @@ class MorphologyRepository:
         if not self.enabled:
             raise RuntimeError("Morphology DB is disabled.")
         table_key, table_name = self._resolve_crud_table(dataset)
+        table_name = self._validate_table_name(table_name)
         _ = table_key
         self.ensure_schema()
         safe_limit = max(1, min(int(limit), 1000))
         safe_offset = max(0, int(offset))
 
         with self._db_lock:
-            connection = sqlite3.connect(self.db_path)
+            connection = self._open_connection()
             try:
                 headers = self._table_headers(connection, table_name)
                 if not headers:
                     return [], []
                 order_clause = '"id" DESC' if "id" in headers else "ROWID DESC"
                 query = (
-                    f'SELECT * FROM "{table_name}" '
+                    f'SELECT * FROM "{table_name}" '  # nosec
                     f"ORDER BY {order_clause} LIMIT ? OFFSET ?"
                 )
                 cursor = connection.execute(query, (safe_limit, safe_offset))
@@ -178,15 +221,35 @@ class MorphologyRepository:
         rows, expression_rows = self._collect_ingest_rows(parts, source)
         if not rows and not expression_rows:
             return
-        lexeme_rows = _unique_lexeme_rows(rows)
-        occurrence_rows = _occurrence_rows(rows)
+        lexeme_unique: dict[tuple[str, str, str, str], None] = {}
+        occurrence_rows: list[tuple[object, ...]] = []
+        for row in rows:
+            occurrence_rows.append(
+                (
+                    row.source,
+                    row.part_index,
+                    row.segment_index,
+                    row.token_index,
+                    row.voice,
+                    row.token,
+                    row.lemma,
+                    row.upos,
+                    row.feats_json,
+                    row.start,
+                    row.end,
+                    row.key,
+                    row.text_sha1,
+                )
+            )
+            lexeme_unique[(row.key, row.lemma, row.upos, row.feats_json)] = None
+        lexeme_rows = list(lexeme_unique.keys())
         unique_expression_rows = _expression_rows(expression_rows)
         if not lexeme_rows and not occurrence_rows and not unique_expression_rows:
             return
         try:
             self._ensure_parent_dir()
             with self._db_lock:
-                connection = sqlite3.connect(self.db_path)
+                connection = self._open_connection()
                 try:
                     with connection:
                         self._ensure_schema_with_connection(connection)
@@ -335,9 +398,7 @@ class MorphologyRepository:
             from odf.table import Table, TableCell, TableColumn, TableRow
             from odf.text import P
         except Exception as exc:
-            raise RuntimeError(
-                "ODF export requires odfpy. Install dependency and retry."
-            ) from exc
+            raise RuntimeError("ODF export requires odfpy. Install dependency and retry.") from exc
 
         document = OpenDocumentSpreadsheet()
         table = Table(name=sheet_name[:31] or "Sheet1")
@@ -398,7 +459,7 @@ class MorphologyRepository:
 
         workbook = Workbook()
         worksheet = workbook.active
-        worksheet.title = (sheet_name[:31] or "Sheet1")
+        worksheet.title = sheet_name[:31] or "Sheet1"
         worksheet.append([str(header) for header in headers])
         for row_values in rows:
             worksheet.append([str(value) for value in row_values[: len(headers)]])
@@ -427,40 +488,19 @@ class MorphologyRepository:
         analysis: object | None = None,
     ) -> list[MorphRow]:
         token_rows: list[MorphRow] = []
-        if analysis is None:
-            analysis = self.analyzer(segment_text)
-        items = analysis.get("items", []) if isinstance(analysis, dict) else []
-        if not isinstance(items, list):
-            return token_rows
-
-        for token_index, item in enumerate(items):
-            if not isinstance(item, dict):
-                continue
-            token = str(item.get("token", "")).strip()
-            if not token:
-                continue
-            lemma = str(item.get("lemma", token)).strip() or token
-            upos = str(item.get("upos", "X")).strip().upper() or "X"
-            start = _to_int(item.get("start"), 0)
-            end = _to_int(item.get("end"), start)
-            dedup_key = str(item.get("key", "")).strip() or _build_key(lemma, upos)
-            token_rows.append(
-                MorphRow(
-                    source=source,
-                    part_index=part_index,
-                    segment_index=segment_index,
-                    token_index=token_index,
-                    voice=voice,
-                    token=token,
-                    lemma=lemma,
-                    upos=upos,
-                    feats_json=self._serialize_feats_json(item.get("feats")),
-                    start=start,
-                    end=end,
-                    key=dedup_key,
-                    text_sha1=segment_hash,
-                )
-            )
+        token_templates = self._collect_segment_token_templates(
+            segment_text=segment_text,
+            analysis=analysis,
+        )
+        self._append_token_rows(
+            token_rows,
+            source=source,
+            part_index=part_index,
+            segment_index=segment_index,
+            voice=voice,
+            segment_hash=segment_hash,
+            token_templates=token_templates,
+        )
         return token_rows
 
     def _collect_segment_expressions(
@@ -475,45 +515,19 @@ class MorphologyRepository:
         expressions: object | None = None,
     ) -> list[ExpressionRow]:
         expression_rows: list[ExpressionRow] = []
-        if expressions is None:
-            expressions = self.expression_extractor(segment_text)
-        if not expressions:
-            return expression_rows
-        for expression_index, item in enumerate(expressions):
-            if not isinstance(item, dict):
-                continue
-            expression_text = str(item.get("text", "")).strip()
-            if not expression_text:
-                continue
-            expression_lemma = (
-                str(item.get("lemma", expression_text)).strip() or expression_text
-            )
-            expression_type = str(item.get("kind", "expression")).strip() or "expression"
-            start = _to_int(item.get("start"), 0)
-            end = _to_int(item.get("end"), start)
-            expression_key = str(item.get("key", "")).strip() or (
-                f"{expression_lemma.lower()}|{expression_type.lower()}"
-            )
-            match_source = str(item.get("source", "unknown")).strip() or "unknown"
-            wordnet_hit = 1 if bool(item.get("wordnet")) else 0
-            expression_rows.append(
-                ExpressionRow(
-                    source=source,
-                    part_index=part_index,
-                    segment_index=segment_index,
-                    expression_index=expression_index,
-                    voice=voice,
-                    expression_text=expression_text,
-                    expression_lemma=expression_lemma,
-                    expression_type=expression_type,
-                    start=start,
-                    end=end,
-                    expression_key=expression_key,
-                    match_source=match_source,
-                    wordnet=wordnet_hit,
-                    text_sha1=segment_hash,
-                )
-            )
+        expression_templates = self._collect_segment_expression_templates(
+            segment_text=segment_text,
+            expressions=expressions,
+        )
+        self._append_expression_rows(
+            expression_rows,
+            source=source,
+            part_index=part_index,
+            segment_index=segment_index,
+            voice=voice,
+            segment_hash=segment_hash,
+            expression_templates=expression_templates,
+        )
         return expression_rows
 
     def _collect_ingest_rows(
@@ -529,39 +543,197 @@ class MorphologyRepository:
                 segment_text = (text or "").strip()
                 if not segment_text:
                     continue
-                segment_hash = self._segment_hash(segment_text)
                 voice_text = str(voice or "")
-                analysis = self._cache_lookup(self._analysis_cache, segment_text)
-                if analysis is None:
-                    analysis = self.analyzer(segment_text)
-                    self._cache_store(self._analysis_cache, segment_text, analysis)
-                expressions = self._cache_lookup(self._expressions_cache, segment_text)
-                if expressions is None:
-                    expressions = self.expression_extractor(segment_text)
-                    self._cache_store(self._expressions_cache, segment_text, expressions)
-                token_rows.extend(
-                    self._collect_segment_tokens(
+                segment_hash, token_templates, expression_templates = self._segment_templates(
+                    segment_text
+                )
+                if token_templates:
+                    self._append_token_rows(
+                        token_rows,
                         source=source,
                         part_index=part_index,
                         segment_index=segment_index,
                         voice=voice_text,
-                        segment_text=segment_text,
                         segment_hash=segment_hash,
-                        analysis=analysis,
+                        token_templates=token_templates,
                     )
-                )
-                expression_rows.extend(
-                    self._collect_segment_expressions(
+                if expression_templates:
+                    self._append_expression_rows(
+                        expression_rows,
                         source=source,
                         part_index=part_index,
                         segment_index=segment_index,
                         voice=voice_text,
-                        segment_text=segment_text,
                         segment_hash=segment_hash,
-                        expressions=expressions,
+                        expression_templates=expression_templates,
                     )
-                )
         return token_rows, expression_rows
+
+    def _collect_segment_token_templates(
+        self,
+        *,
+        segment_text: str,
+        analysis: object | None = None,
+    ) -> tuple[_TokenTemplate, ...]:
+        if analysis is None:
+            analysis = self.analyzer(segment_text)
+        items = analysis.get("items", []) if isinstance(analysis, dict) else []
+        if not isinstance(items, list):
+            return ()
+        templates: list[_TokenTemplate] = []
+        append_template = templates.append
+        serialize_feats = self._serialize_feats_json
+        for token_index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            token = str(item.get("token", "")).strip()
+            if not token:
+                continue
+            lemma = str(item.get("lemma", token)).strip() or token
+            upos = str(item.get("upos", "X")).strip().upper() or "X"
+            start = _to_int(item.get("start"), 0)
+            end = _to_int(item.get("end"), start)
+            dedup_key = str(item.get("key", "")).strip() or _build_key(lemma, upos)
+            append_template(
+                _TokenTemplate(
+                    token_index=token_index,
+                    token=token,
+                    lemma=lemma,
+                    upos=upos,
+                    feats_json=serialize_feats(item.get("feats")),
+                    start=start,
+                    end=end,
+                    key=dedup_key,
+                )
+            )
+        return tuple(templates)
+
+    def _collect_segment_expression_templates(
+        self,
+        *,
+        segment_text: str,
+        expressions: object | None = None,
+    ) -> tuple[_ExpressionTemplate, ...]:
+        if expressions is None:
+            expressions = self.expression_extractor(segment_text)
+        if not expressions:
+            return ()
+        templates: list[_ExpressionTemplate] = []
+        append_template = templates.append
+        for expression_index, item in enumerate(expressions):
+            if not isinstance(item, dict):
+                continue
+            expression_text = str(item.get("text", "")).strip()
+            if not expression_text:
+                continue
+            expression_lemma = str(item.get("lemma", expression_text)).strip() or expression_text
+            expression_type = str(item.get("kind", "expression")).strip() or "expression"
+            start = _to_int(item.get("start"), 0)
+            end = _to_int(item.get("end"), start)
+            expression_key = str(item.get("key", "")).strip() or (
+                f"{expression_lemma.lower()}|{expression_type.lower()}"
+            )
+            match_source = str(item.get("source", "unknown")).strip() or "unknown"
+            append_template(
+                _ExpressionTemplate(
+                    expression_index=expression_index,
+                    expression_text=expression_text,
+                    expression_lemma=expression_lemma,
+                    expression_type=expression_type,
+                    start=start,
+                    end=end,
+                    expression_key=expression_key,
+                    match_source=match_source,
+                    wordnet=1 if bool(item.get("wordnet")) else 0,
+                )
+            )
+        return tuple(templates)
+
+    def _segment_templates(
+        self,
+        segment_text: str,
+    ) -> tuple[str, tuple[_TokenTemplate, ...], tuple[_ExpressionTemplate, ...]]:
+        cached = self._cache_lookup(self._segment_templates_cache, segment_text)
+        if cached is not None:
+            return cached
+        analysis = self.analyzer(segment_text)
+        expressions = self.expression_extractor(segment_text)
+        payload = (
+            self._segment_hash(segment_text),
+            self._collect_segment_token_templates(
+                segment_text=segment_text,
+                analysis=analysis,
+            ),
+            self._collect_segment_expression_templates(
+                segment_text=segment_text,
+                expressions=expressions,
+            ),
+        )
+        self._cache_store(self._segment_templates_cache, segment_text, payload)
+        return payload
+
+    def _append_token_rows(
+        self,
+        target: list[MorphRow],
+        *,
+        source: str,
+        part_index: int,
+        segment_index: int,
+        voice: str,
+        segment_hash: str,
+        token_templates: Sequence[_TokenTemplate],
+    ) -> None:
+        append_row = target.append
+        for template in token_templates:
+            append_row(
+                MorphRow(
+                    source=source,
+                    part_index=part_index,
+                    segment_index=segment_index,
+                    token_index=template.token_index,
+                    voice=voice,
+                    token=template.token,
+                    lemma=template.lemma,
+                    upos=template.upos,
+                    feats_json=template.feats_json,
+                    start=template.start,
+                    end=template.end,
+                    key=template.key,
+                    text_sha1=segment_hash,
+                )
+            )
+
+    def _append_expression_rows(
+        self,
+        target: list[ExpressionRow],
+        *,
+        source: str,
+        part_index: int,
+        segment_index: int,
+        voice: str,
+        segment_hash: str,
+        expression_templates: Sequence[_ExpressionTemplate],
+    ) -> None:
+        append_row = target.append
+        for template in expression_templates:
+            append_row(
+                ExpressionRow(
+                    source=source,
+                    part_index=part_index,
+                    segment_index=segment_index,
+                    expression_index=template.expression_index,
+                    voice=voice,
+                    expression_text=template.expression_text,
+                    expression_lemma=template.expression_lemma,
+                    expression_type=template.expression_type,
+                    start=template.start,
+                    end=template.end,
+                    expression_key=template.expression_key,
+                    match_source=template.match_source,
+                    wordnet=template.wordnet,
+                    text_sha1=segment_hash,
+                )
+            )
 
     def _cache_lookup(self, cache: OrderedDict[str, object], key: str) -> object | None:
         if self._segment_cache_size <= 0:
@@ -592,7 +764,25 @@ class MorphologyRepository:
             return "expressions", self.expressions_table
         raise ValueError("Unsupported dataset. Use lexemes, occurrences, or expressions.")
 
+    def _validate_table_name(self, table_name: str) -> str:
+        if table_name not in self._allowed_tables:
+            raise ValueError("Unsupported table requested.")
+        return table_name
+
+    def _open_connection(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.db_path, timeout=30.0)
+        connection.execute("PRAGMA busy_timeout=30000")
+        if self.db_path and self.db_path != ":memory:":
+            try:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA synchronous=NORMAL")
+            except sqlite3.DatabaseError:
+                # Keep runtime resilient on restricted filesystems.
+                pass
+        return connection
+
     def _table_headers(self, connection: sqlite3.Connection, table_name: str) -> list[str]:
+        table_name = self._validate_table_name(table_name)
         cursor = connection.execute(f'PRAGMA table_info("{table_name}")')
         return [str(row[1]) for row in cursor.fetchall() if len(row) > 1]
 
@@ -622,11 +812,12 @@ class MorphologyRepository:
         return self.lexemes_table
 
     def _query_table_rows(self, table_name: str) -> tuple[list[str], list[list[str]]]:
+        table_name = self._validate_table_name(table_name)
         with self._db_lock:
             connection = None
             try:
-                connection = sqlite3.connect(self.db_path)
-                cursor = connection.execute(f'SELECT * FROM "{table_name}" ORDER BY ROWID')
+                connection = self._open_connection()
+                cursor = connection.execute(f'SELECT * FROM "{table_name}" ORDER BY ROWID')  # nosec
                 headers = [description[0] for description in cursor.description or []]
                 rows = [[_stringify_cell(item) for item in row] for row in cursor.fetchall()]
                 return headers, rows
@@ -638,9 +829,9 @@ class MorphologyRepository:
         with self._db_lock:
             connection = None
             try:
-                connection = sqlite3.connect(self.db_path)
+                connection = self._open_connection()
                 cursor = connection.execute(
-                    f'SELECT "upos", "lemma" FROM "{self.lexemes_table}" ORDER BY "upos", "lemma" COLLATE NOCASE'
+                    f'SELECT "upos", "lemma" FROM "{self.lexemes_table}" ORDER BY "upos", "lemma" COLLATE NOCASE'  # nosec
                 )
                 entries = cursor.fetchall()
                 if not entries:

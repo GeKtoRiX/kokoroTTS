@@ -78,7 +78,9 @@ def _mode_flags(mode: str, cuda_available: bool) -> list[tuple[str, bool]]:
     return flags
 
 
-def _run_once(state, *, text: str, voice: str, use_gpu: bool, save_outputs: bool) -> tuple[float, int]:
+def _run_once(
+    state, *, text: str, voice: str, use_gpu: bool, save_outputs: bool
+) -> tuple[float, int]:
     started = time.perf_counter()
     result, _ = state.generate_first(
         text=text,
@@ -94,7 +96,9 @@ def _run_once(state, *, text: str, voice: str, use_gpu: bool, save_outputs: bool
     return elapsed, samples
 
 
-def _print_profile(state, *, text: str, voice: str, use_gpu: bool, save_outputs: bool, top: int) -> None:
+def _print_profile(
+    state, *, text: str, voice: str, use_gpu: bool, save_outputs: bool, top: int
+) -> None:
     profiler = cProfile.Profile()
     profiler.enable()
     _run_once(

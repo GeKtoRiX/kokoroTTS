@@ -28,6 +28,7 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 data/morphology.sqlite3
+data/app_state.json
 tools/
 .env
 

@@ -1,0 +1,31 @@
+name: Perf Guard
+
+on:
+  workflow_dispatch:
+
+jobs:
+  microbench-guard:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Microbenchmark
+        shell: pwsh
+        run: |
+          python bench/micro/benchmark_morph_collect.py --phase ci --runs 10 --warmups 2 --include-cache-disabled 1
+
+      - name: Validate Thresholds
+        shell: pwsh
+        run: |
+          $latest = Get-ChildItem profiles/micro/*_ci_morph_collect_micro.json | Sort-Object LastWriteTime | Select-Object -Last 1
+          if (-not $latest) {
+            throw "No microbenchmark artifact found in profiles/micro."
+          }
+          python bench/perf_guard.py --result-json $latest.FullName --max-cache-hit-ms 120 --min-cache-speedup 1.8
+

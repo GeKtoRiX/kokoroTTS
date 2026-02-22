@@ -1,0 +1,82 @@
+{
+  "phase": "after",
+  "timestamp": "20260222_163142",
+  "python_executable": "D:\\pythonProjects\\kokoroTTS\\.venv\\Scripts\\python.exe",
+  "repeats": 5,
+  "results": {
+    "app": {
+      "target": "app",
+      "runs": [
+        {
+          "elapsed_s": 3.5602514,
+          "rss_bytes": 416862208.0
+        },
+        {
+          "elapsed_s": 3.4915635,
+          "rss_bytes": 417259520.0
+        },
+        {
+          "elapsed_s": 3.4862836,
+          "rss_bytes": 417517568.0
+        },
+        {
+          "elapsed_s": 3.4923502,
+          "rss_bytes": 417660928.0
+        },
+        {
+          "elapsed_s": 3.4820639,
+          "rss_bytes": 416788480.0
+        }
+      ],
+      "elapsed_s": {
+        "mean": 3.50250252,
+        "stddev": 0.032551710610457855,
+        "min": 3.4820639,
+        "max": 3.5602514
+      },
+      "rss_mb": {
+        "mean": 397.88984375,
+        "stddev": 0.36896387137348047,
+        "min": 397.48046875,
+        "max": 398.3125
+      }
+    },
+    "morph_repo": {
+      "target": "morph_repo",
+      "runs": [
+        {
+          "elapsed_s": 1.0850523,
+          "rss_bytes": 203182080.0
+        },
+        {
+          "elapsed_s": 1.0768129,
+          "rss_bytes": 202219520.0
+        },
+        {
+          "elapsed_s": 1.0817028,
+          "rss_bytes": 202711040.0
+        },
+        {
+          "elapsed_s": 1.0770078,
+          "rss_bytes": 202702848.0
+        },
+        {
+          "elapsed_s": 1.1252519,
+          "rss_bytes": 203100160.0
+        }
+      ],
+      "elapsed_s": {
+        "mean": 1.08916554,
+        "stddev": 0.020464817165882554,
+        "min": 1.0768129,
+        "max": 1.1252519
+      },
+      "rss_mb": {
+        "mean": 193.3890625,
+        "stddev": 0.36594495549087536,
+        "min": 192.8515625,
+        "max": 193.76953125
+      }
+    }
+  }
+}

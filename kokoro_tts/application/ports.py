@@ -21,8 +21,7 @@ class KokoroTtsPort(Protocol):
         normalize_times_enabled=None,
         normalize_numbers_enabled=None,
         style_preset="neutral",
-    ):
-        ...
+    ): ...
 
     def predict(
         self,
@@ -34,8 +33,7 @@ class KokoroTtsPort(Protocol):
         normalize_times_enabled=None,
         normalize_numbers_enabled=None,
         style_preset="neutral",
-    ):
-        ...
+    ): ...
 
     def tokenize_first(
         self,
@@ -47,8 +45,7 @@ class KokoroTtsPort(Protocol):
         normalize_times_enabled=None,
         normalize_numbers_enabled=None,
         style_preset="neutral",
-    ):
-        ...
+    ): ...
 
     def generate_all(
         self,
@@ -62,5 +59,4 @@ class KokoroTtsPort(Protocol):
         normalize_times_enabled=None,
         normalize_numbers_enabled=None,
         style_preset="neutral",
-    ) -> Generator[tuple[int, object], None, None]:
-        ...
+    ) -> Generator[tuple[int, object], None, None]: ...

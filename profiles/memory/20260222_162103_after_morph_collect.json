@@ -1,0 +1,146 @@
+{
+  "phase": "after",
+  "timestamp": "20260222_162103",
+  "workload": {
+    "parts": 10,
+    "segments_per_part": 160,
+    "tokens_per_segment": 160,
+    "unique_segments": 24,
+    "segment_cache_size": 1024
+  },
+  "result": {
+    "elapsed_seconds": 6.384233500051778,
+    "token_rows": 256000,
+    "expression_rows": 1600,
+    "rss_before_bytes": 208551936,
+    "rss_after_bytes": 268365824,
+    "rss_peak_sampled_bytes": 270409728,
+    "rss_peak_sampled_mb": 257.8828125,
+    "tracemalloc_current_bytes": 37165000,
+    "tracemalloc_peak_bytes": 37166416,
+    "tracemalloc_peak_mb": 35.44465637207031
+  },
+  "top_allocations": [
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 689,
+      "size_bytes": 34816000,
+      "count": 256000
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 688,
+      "size_bytes": 2055456,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 720,
+      "size_bytes": 230552,
+      "count": 1601
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\bench\\profile_memory.py",
+      "line": 61,
+      "size_bytes": 36048,
+      "count": 811
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 719,
+      "size_bytes": 14304,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\.venv\\Lib\\site-packages\\psutil\\_pswindows.py",
+      "line": 863,
+      "size_bytes": 11488,
+      "count": 407
+    },
+    {
+      "file": "<string>",
+      "line": 1,
+      "size_bytes": 184,
+      "count": 2
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\threading.py",
+      "line": 992,
+      "size_bytes": 160,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\.venv\\Lib\\site-packages\\psutil\\_pswindows.py",
+      "line": 891,
+      "size_bytes": 136,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\bench\\profile_memory.py",
+      "line": 109,
+      "size_bytes": 112,
+      "count": 3
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\threading.py",
+      "line": 1110,
+      "size_bytes": 64,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\.venv\\Lib\\site-packages\\psutil\\_pswindows.py",
+      "line": 730,
+      "size_bytes": 64,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\.venv\\Lib\\site-packages\\psutil\\__init__.py",
+      "line": 1102,
+      "size_bytes": 64,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\tracemalloc.py",
+      "line": 558,
+      "size_bytes": 56,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 542,
+      "size_bytes": 56,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 540,
+      "size_bytes": 56,
+      "count": 1
+    },
+    {
+      "file": "<string>",
+      "line": 16,
+      "size_bytes": 56,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\bench\\profile_memory.py",
+      "line": 106,
+      "size_bytes": 48,
+      "count": 2
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\threading.py",
+      "line": 317,
+      "size_bytes": 48,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\threading.py",
+      "line": 1043,
+      "size_bytes": 28,
+      "count": 1
+    }
+  ],
+  "rss_trend_path": "profiles/memory/20260222_162103_after_morph_collect_rss_trend.csv"
+}

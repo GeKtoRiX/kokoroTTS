@@ -1,0 +1,67 @@
+{
+  "phase": "after",
+  "timestamp": "20260222_163226",
+  "segment_cache_size": 1024,
+  "cases": [
+    {
+      "case": "cache_hit",
+      "workload": {
+        "parts": 4,
+        "segments_per_part": 40,
+        "tokens_per_segment": 120,
+        "unique_segments": 1
+      },
+      "runs": 15,
+      "latency_ms": {
+        "mean": 39.76047333174696,
+        "stddev": 13.487442503444283,
+        "p50": 32.55240002181381,
+        "p95": 65.61429996509105,
+        "min": 31.29149996675551,
+        "max": 66.03460002224892
+      },
+      "token_rows": 19200,
+      "expression_rows": 160
+    },
+    {
+      "case": "cache_miss",
+      "workload": {
+        "parts": 4,
+        "segments_per_part": 40,
+        "tokens_per_segment": 120,
+        "unique_segments": 160
+      },
+      "runs": 15,
+      "latency_ms": {
+        "mean": 42.338540005342416,
+        "stddev": 17.31045981853196,
+        "p50": 32.44909999193624,
+        "p95": 70.58539998251945,
+        "min": 31.845000048633665,
+        "max": 72.45159999001771
+      },
+      "token_rows": 19200,
+      "expression_rows": 160
+    },
+    {
+      "case": "cache_disabled",
+      "workload": {
+        "parts": 4,
+        "segments_per_part": 40,
+        "tokens_per_segment": 120,
+        "unique_segments": 1
+      },
+      "runs": 15,
+      "latency_ms": {
+        "mean": 121.01131999321903,
+        "stddev": 16.695282118028594,
+        "p50": 110.6236000196077,
+        "p95": 145.88730002287775,
+        "min": 108.53640001732856,
+        "max": 148.6245999694802
+      },
+      "token_rows": 19200,
+      "expression_rows": 160
+    }
+  ]
+}

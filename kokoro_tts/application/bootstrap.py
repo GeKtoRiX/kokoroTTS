@@ -1,4 +1,5 @@
 """Application bootstrap assembly for model, storage, and UI services."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,7 +8,6 @@ from typing import Mapping
 from ..config import AppConfig
 from ..constants import SAMPLE_RATE
 from ..domain.audio_postfx import AudioPostFxSettings
-from ..domain.expressions import extract_english_expressions
 from ..domain.normalization import TextNormalizer
 from ..integrations.model_manager import ModelManager
 from ..integrations.spaces_gpu import build_forward_gpu
@@ -22,10 +22,13 @@ from .state import KokoroState
 from .ui_hooks import UiHooks
 
 
+def _no_expressions(_text: str) -> list[dict[str, object]]:
+    return []
+
+
 @dataclass(frozen=True)
 class AppServices:
     model_manager: ModelManager
-    silero_manager: object | None
     text_normalizer: TextNormalizer
     audio_writer: AudioWriter
     morphology_repository: MorphologyRepository
@@ -55,7 +58,6 @@ def initialize_app_services(
     set_tts_only_mode=None,
     tts_only_mode_default: bool = False,
     choices: Mapping[str, str],
-    silero_manager=None,
 ) -> AppServices:
     """Construct all runtime services and return a typed service bundle."""
     pronunciation_repository = PronunciationRepository(
@@ -85,21 +87,20 @@ def initialize_app_services(
 
     if config.morph_local_expressions_enabled:
         logger.info("Local expression extraction is enabled.")
+        # Delay heavy expression-module import until feature is enabled.
+        from ..domain.expressions import extract_english_expressions
+
+        expression_extractor = extract_english_expressions
     else:
-        logger.info(
-            "Local expression extraction is disabled."
-        )
+        logger.info("Local expression extraction is disabled.")
+        expression_extractor = _no_expressions
 
     morphology_repository = MorphologyRepository(
         enabled=config.morph_db_enabled,
         db_path=config.morph_db_path,
         table_prefix=config.morph_db_table_prefix,
         logger_instance=logger,
-        expression_extractor=(
-            extract_english_expressions
-            if config.morph_local_expressions_enabled
-            else (lambda _text: [])
-        ),
+        expression_extractor=expression_extractor,
     )
 
     forward_gpu = build_forward_gpu(model_manager)
@@ -139,7 +140,6 @@ def initialize_app_services(
         morphology_async_ingest=config.morph_async_ingest,
         morphology_async_max_pending=config.morph_async_max_pending,
         postfx_settings=postfx_settings,
-        silero_manager=silero_manager,
     )
     history_repository = HistoryRepository(config.output_dir_abs, logger)
     history_service = HistoryService(
@@ -171,7 +171,6 @@ def initialize_app_services(
 
     return AppServices(
         model_manager=model_manager,
-        silero_manager=silero_manager,
         text_normalizer=text_normalizer,
         audio_writer=audio_writer,
         morphology_repository=morphology_repository,

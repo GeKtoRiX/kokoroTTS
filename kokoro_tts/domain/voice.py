@@ -1,4 +1,5 @@
 """Voice catalog and parsing helpers."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -29,6 +30,7 @@ class DialogueSegment:
     text: str
     style_preset: str = DEFAULT_STYLE_PRESET
     pause_seconds: float | None = None
+
 
 LANGUAGE_LABELS = {
     "a": "American English",
@@ -211,7 +213,11 @@ def register_runtime_voices(
         option = (label, voice_id)
 
         existing_global = next(
-            (index for index, (_existing_label, existing_id) in enumerate(VOICE_ITEMS) if existing_id == voice_id),
+            (
+                index
+                for index, (_existing_label, existing_id) in enumerate(VOICE_ITEMS)
+                if existing_id == voice_id
+            ),
             None,
         )
         if existing_global is None:
@@ -221,7 +227,11 @@ def register_runtime_voices(
 
         lang_options = VOICE_OPTIONS_BY_LANG.setdefault(normalized_lang, [])
         existing_local = next(
-            (index for index, (_existing_label, existing_id) in enumerate(lang_options) if existing_id == voice_id),
+            (
+                index
+                for index, (_existing_label, existing_id) in enumerate(lang_options)
+                if existing_id == voice_id
+            ),
             None,
         )
         if existing_local is None:
@@ -252,7 +262,9 @@ def get_voice_choices(lang_code: str | None = None) -> list[tuple[str, str]]:
     if not lang_code:
         return list(VOICE_ITEMS)
     lang = normalize_lang_code(lang_code, default=voice_language(DEFAULT_VOICE))
-    return list(VOICE_OPTIONS_BY_LANG.get(lang) or VOICE_OPTIONS_BY_LANG[voice_language(DEFAULT_VOICE)])
+    return list(
+        VOICE_OPTIONS_BY_LANG.get(lang) or VOICE_OPTIONS_BY_LANG[voice_language(DEFAULT_VOICE)]
+    )
 
 
 def default_voice_for_lang(lang_code: str) -> str:

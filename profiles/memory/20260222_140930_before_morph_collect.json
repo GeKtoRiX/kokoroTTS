@@ -1,0 +1,146 @@
+{
+  "phase": "before",
+  "timestamp": "20260222_140930",
+  "workload": {
+    "parts": 10,
+    "segments_per_part": 160,
+    "tokens_per_segment": 160,
+    "unique_segments": 24,
+    "segment_cache_size": 1024
+  },
+  "result": {
+    "elapsed_seconds": 23.532990300038364,
+    "token_rows": 256000,
+    "expression_rows": 1600,
+    "rss_before_bytes": 211148800,
+    "rss_after_bytes": 375775232,
+    "rss_peak_sampled_bytes": 384143360,
+    "rss_peak_sampled_mb": 366.34765625,
+    "tracemalloc_current_bytes": 72898636,
+    "tracemalloc_peak_bytes": 72901252,
+    "tracemalloc_peak_mb": 69.52405166625977
+  },
+  "top_allocations": [
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 453,
+      "size_bytes": 45056144,
+      "count": 512001
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\json\\encoder.py",
+      "line": 258,
+      "size_bytes": 13568112,
+      "count": 256002
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 448,
+      "size_bytes": 11520000,
+      "count": 256000
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 545,
+      "size_bytes": 2128352,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 503,
+      "size_bytes": 307352,
+      "count": 3201
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\bench\\profile_memory.py",
+      "line": 61,
+      "size_bytes": 131712,
+      "count": 2977
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 416,
+      "size_bytes": 129600,
+      "count": 1600
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\.venv\\Lib\\site-packages\\psutil\\_pswindows.py",
+      "line": 863,
+      "size_bytes": 41812,
+      "count": 1490
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 556,
+      "size_bytes": 14304,
+      "count": 1
+    },
+    {
+      "file": "<string>",
+      "line": 1,
+      "size_bytes": 232,
+      "count": 3
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\threading.py",
+      "line": 992,
+      "size_bytes": 160,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\.venv\\Lib\\site-packages\\psutil\\_pswindows.py",
+      "line": 891,
+      "size_bytes": 136,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\.venv\\Lib\\site-packages\\psutil\\_pswindows.py",
+      "line": 730,
+      "size_bytes": 128,
+      "count": 2
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\json\\encoder.py",
+      "line": 249,
+      "size_bytes": 112,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\json\\__init__.py",
+      "line": 234,
+      "size_bytes": 104,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\tools\\python312\\runtime\\Lib\\threading.py",
+      "line": 1110,
+      "size_bytes": 64,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\bench\\profile_memory.py",
+      "line": 109,
+      "size_bytes": 56,
+      "count": 2
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\kokoro_tts\\storage\\morphology_repository.py",
+      "line": 487,
+      "size_bytes": 56,
+      "count": 1
+    },
+    {
+      "file": "<string>",
+      "line": 16,
+      "size_bytes": 56,
+      "count": 1
+    },
+    {
+      "file": "D:\\pythonProjects\\kokoroTTS\\bench\\profile_memory.py",
+      "line": 106,
+      "size_bytes": 48,
+      "count": 2
+    }
+  ],
+  "rss_trend_path": "profiles/memory/20260222_140930_before_morph_collect_rss_trend.csv"
+}

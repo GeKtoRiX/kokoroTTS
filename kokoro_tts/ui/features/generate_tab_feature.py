@@ -9,6 +9,98 @@ from typing import Any
 from ...domain.style import DEFAULT_STYLE_PRESET
 
 
+class _HoverTooltip:
+    """Simple hover tooltip rendered as a small floating window."""
+
+    def __init__(
+        self,
+        widget: tk.Widget,
+        text: str,
+        *,
+        background: str,
+        foreground: str,
+        border: str,
+    ) -> None:
+        self.widget = widget
+        self.text = str(text or "").strip()
+        self.background = background
+        self.foreground = foreground
+        self.border = border
+        self._window: tk.Toplevel | None = None
+        self._after_id: str | None = None
+
+        self.widget.bind("<Enter>", self._on_enter, add="+")
+        self.widget.bind("<Leave>", self._on_leave, add="+")
+        self.widget.bind("<ButtonPress>", self._on_leave, add="+")
+        self.widget.bind("<Destroy>", self._on_destroy, add="+")
+
+    def _on_enter(self, _event: tk.Event[Any]) -> None:
+        if not self.text:
+            return
+        self._cancel_scheduled_show()
+        self._after_id = self.widget.after(280, self._show)
+
+    def _on_leave(self, _event: tk.Event[Any]) -> None:
+        self._cancel_scheduled_show()
+        self._hide()
+
+    def _on_destroy(self, _event: tk.Event[Any]) -> None:
+        self._cancel_scheduled_show()
+        self._hide()
+
+    def _cancel_scheduled_show(self) -> None:
+        if self._after_id is None:
+            return
+        try:
+            self.widget.after_cancel(self._after_id)
+        except Exception:
+            pass
+        self._after_id = None
+
+    def _show(self) -> None:
+        self._after_id = None
+        if self._window is not None:
+            return
+        try:
+            if not self.widget.winfo_exists():
+                return
+            x = int(self.widget.winfo_rootx()) + 12
+            y = int(self.widget.winfo_rooty()) + int(self.widget.winfo_height()) + 8
+        except Exception:
+            return
+        self._window = tk.Toplevel(self.widget)
+        self._window.wm_overrideredirect(True)
+        try:
+            self._window.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        self._window.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(
+            self._window,
+            text=self.text,
+            justify="left",
+            background=self.background,
+            foreground=self.foreground,
+            borderwidth=1,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=self.border,
+            padx=7,
+            pady=4,
+            font=("Segoe UI", 9),
+        )
+        label.pack()
+
+    def _hide(self) -> None:
+        if self._window is None:
+            return
+        try:
+            self._window.destroy()
+        except Exception:
+            pass
+        self._window = None
+
+
 class GenerateTabFeature:
     """Build and handle the Generate tab and its nested views."""
 
@@ -76,6 +168,7 @@ class GenerateTabFeature:
 
     def _build_player_tab(self, parent: ttk.Frame) -> None:
         ui = self.host
+        ui.audio_player_shortcut_tooltips.clear()
         parent.grid_columnconfigure(0, weight=1)
         player_shell = ttk.Frame(parent, style="PlayerShell.TFrame", padding=(8, 8))
         player_shell.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 8))
@@ -86,13 +179,14 @@ class GenerateTabFeature:
         mode_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
         mode_row.grid(row=0, column=0, sticky="ew", padx=8, pady=(2, 4))
         mode_row.grid_columnconfigure(0, weight=1)
-        ttk.Checkbutton(
+        ui.audio_player_minimal_check_btn = ttk.Checkbutton(
             mode_row,
             text="Minimal",
             variable=ui.audio_player_minimal_var,
             style="Player.TCheckbutton",
             command=ui._on_audio_player_minimal_toggle,
-        ).grid(row=0, column=1, sticky="e", padx=8, pady=6)
+        )
+        ui.audio_player_minimal_check_btn.grid(row=0, column=1, sticky="e", padx=8, pady=6)
 
         track_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
         track_row.grid(row=1, column=0, sticky="ew", padx=8, pady=6)
@@ -117,7 +211,9 @@ class GenerateTabFeature:
             relief="flat",
         )
         ui.audio_player_waveform_canvas.grid(row=0, column=0, sticky="ew")
-        ui.audio_player_waveform_canvas.bind("<Configure>", lambda _e: ui._audio_player_redraw_waveform())
+        ui.audio_player_waveform_canvas.bind(
+            "<Configure>", lambda _e: ui._audio_player_redraw_waveform()
+        )
         ui.audio_player_waveform_canvas.bind("<Button-1>", ui._on_audio_player_waveform_seek)
         ui.audio_player_waveform_frame = waveform_row
 
@@ -157,6 +253,7 @@ class GenerateTabFeature:
             text="\u25b6",
             style="TransportPrimary.TButton",
             command=ui._on_audio_player_play,
+            takefocus=False,
         )
         ui.audio_player_play_btn.grid(row=0, column=1, padx=8, pady=6)
         ui.audio_player_pause_btn = ttk.Button(
@@ -164,6 +261,7 @@ class GenerateTabFeature:
             text="\u258c\u258c",
             style="Transport.TButton",
             command=ui._on_audio_player_pause,
+            takefocus=False,
         )
         ui.audio_player_pause_btn.grid(row=0, column=2, padx=8, pady=6)
         ui.audio_player_stop_btn = ttk.Button(
@@ -171,25 +269,33 @@ class GenerateTabFeature:
             text="\u25a0",
             style="Transport.TButton",
             command=ui._on_audio_player_stop,
+            takefocus=False,
         )
         ui.audio_player_stop_btn.grid(row=0, column=3, padx=8, pady=6)
+        self._attach_shortcut_tooltip(ui.audio_player_play_btn, "Hotkey: Space (play/pause)")
+        self._attach_shortcut_tooltip(ui.audio_player_pause_btn, "Hotkey: Space (play/pause)")
+        self._attach_shortcut_tooltip(ui.audio_player_stop_btn, "Hotkey: not assigned")
 
         controls_seek = ttk.Frame(controls_row, style="PlayerShell.TFrame")
         controls_seek.grid(row=1, column=0, sticky="ew")
         controls_seek.grid_columnconfigure(0, weight=1)
         controls_seek.grid_columnconfigure(3, weight=1)
-        ttk.Button(
+        seek_back_btn = ttk.Button(
             controls_seek,
             text="-5s",
             style="Small.TButton",
             command=ui._on_audio_player_seek_back,
-        ).grid(row=0, column=1, padx=8, pady=6)
-        ttk.Button(
+        )
+        seek_back_btn.grid(row=0, column=1, padx=8, pady=6)
+        seek_forward_btn = ttk.Button(
             controls_seek,
             text="+5s",
             style="Small.TButton",
             command=ui._on_audio_player_seek_forward,
-        ).grid(row=0, column=2, padx=8, pady=6)
+        )
+        seek_forward_btn.grid(row=0, column=2, padx=8, pady=6)
+        self._attach_shortcut_tooltip(seek_back_btn, "Hotkey: Ctrl+Left")
+        self._attach_shortcut_tooltip(seek_forward_btn, "Hotkey: Ctrl+Right")
 
         volume_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
         volume_row.grid(row=5, column=0, sticky="ew", padx=8, pady=6)
@@ -229,13 +335,14 @@ class GenerateTabFeature:
         auto_next_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
         auto_next_row.grid(row=6, column=0, sticky="ew", padx=8, pady=6)
         auto_next_row.grid_columnconfigure(0, weight=1)
-        ttk.Checkbutton(
+        ui.audio_player_auto_next_check_btn = ttk.Checkbutton(
             auto_next_row,
             text="Auto-next",
             variable=ui.audio_player_auto_next_var,
             style="Player.TCheckbutton",
             command=ui._save_audio_player_state,
-        ).grid(row=0, column=1, sticky="e", padx=8, pady=6)
+        )
+        ui.audio_player_auto_next_check_btn.grid(row=0, column=1, sticky="e", padx=8, pady=6)
         ui.audio_player_autonext_frame = auto_next_row
 
         status_row = ttk.Frame(player_shell, style="PlayerShell.TFrame")
@@ -253,15 +360,28 @@ class GenerateTabFeature:
         ui._update_audio_player_buttons()
         ui._apply_audio_player_minimal_mode()
 
+    def _attach_shortcut_tooltip(self, widget: tk.Widget, text: str) -> None:
+        ui = self.host
+        tooltip = _HoverTooltip(
+            widget,
+            text,
+            background=getattr(ui, "ui_surface", "#031003"),
+            foreground="#e6e8ef",
+            border=getattr(ui, "ui_border", "#00a83a"),
+        )
+        ui.audio_player_shortcut_tooltips.append(tooltip)
+
     def _build_history_tab(self, parent: ttk.Frame) -> None:
         ui = self.host
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
         history_actions = ttk.Frame(parent, style="Card.TFrame")
         history_actions.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
+        history_actions.grid_columnconfigure(0, weight=0)
+        history_actions.grid_columnconfigure(1, weight=1)
         ttk.Button(
             history_actions,
-            text="Clear history",
+            text="Clear All History",
             style="Primary.TButton",
             command=ui._on_clear_history,
         ).grid(
@@ -273,14 +393,15 @@ class GenerateTabFeature:
             parent,
             height=6,
             exportselection=False,
+            selectmode=tk.EXTENDED,
             font=("Courier New", 10),
             relief="flat",
             borderwidth=1,
         )
         ui._style_listbox(ui.history_listbox)
         ui.history_listbox.grid(row=1, column=0, sticky="nsew", padx=8, pady=(6, 8))
-        ui.history_listbox.bind("<<ListboxSelect>>", lambda _e: ui._on_history_select_autoplay())
         ui.history_listbox.bind("<Double-Button-1>", ui._on_history_double_click)
+        ui.history_listbox.bind("<Button-3>", ui._on_history_context_menu)
 
     def _build_tokens_tab(self, parent: ttk.Frame) -> None:
         ui = self.host
@@ -288,7 +409,9 @@ class GenerateTabFeature:
         parent.grid_rowconfigure(1, weight=1)
         token_actions = ttk.Frame(parent, style="Card.TFrame")
         token_actions.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
-        ttk.Button(token_actions, text="Tokenize", style="Primary.TButton", command=ui._on_tokenize).grid(
+        ttk.Button(
+            token_actions, text="Tokenize", style="Primary.TButton", command=ui._on_tokenize
+        ).grid(
             row=0,
             column=0,
             sticky="w",
@@ -331,7 +454,9 @@ class GenerateTabFeature:
             values=["lexemes", "occurrences", "expressions", "pos_table"],
         )
         dataset_combo.grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=(0, 0))
-        dataset_combo.bind("<<ComboboxSelected>>", lambda _e: ui._on_morphology_preview_dataset_change())
+        dataset_combo.bind(
+            "<<ComboboxSelected>>", lambda _e: ui._on_morphology_preview_dataset_change()
+        )
         ttk.Label(toolbar, text="Format", style="Card.TLabel").grid(
             row=0,
             column=2,
@@ -365,7 +490,9 @@ class GenerateTabFeature:
             style="Treeview",
             selectmode="none",
         )
-        preview_scroll = ui._create_scrollbar(table_wrap, orient=tk.VERTICAL, command=ui.morph_preview_tree.yview)
+        preview_scroll = ui._create_scrollbar(
+            table_wrap, orient=tk.VERTICAL, command=ui.morph_preview_tree.yview
+        )
         ui.morph_preview_tree.configure(yscrollcommand=preview_scroll.set)
         ui.morph_preview_tree.grid(row=0, column=0, sticky="nsew")
         preview_scroll.grid(row=0, column=1, sticky="ns")
@@ -427,11 +554,16 @@ class GenerateTabFeature:
                 if result is None:
                     ui.generate_status_var.set("No audio generated.")
                     return
-                if ui.generate_detail_notebook is not None and ui.generate_detail_tabs.get("player") is not None:
+                if (
+                    ui.generate_detail_notebook is not None
+                    and ui.generate_detail_tabs.get("player") is not None
+                ):
                     ui.generate_detail_notebook.select(ui.generate_detail_tabs["player"])
                 ui.generate_status_var.set("Generation complete. Loading latest audio...")
                 if not ui._autoplay_latest_history():
-                    ui.generate_status_var.set("Generation complete, but no playable file found in History.")
+                    ui.generate_status_var.set(
+                        "Generation complete, but no playable file found in History."
+                    )
             finally:
                 ui._set_generate_button_processing(False)
 

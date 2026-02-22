@@ -1,4 +1,5 @@
 """Logging configuration for the app."""
+
 from __future__ import annotations
 
 import logging
@@ -16,9 +17,7 @@ def setup_logging(config: AppConfig) -> logging.Logger:
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(config.log_level)
-    console_handler.setFormatter(
-        logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-    )
+    console_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
 
     file_handler = logging.FileHandler(config.log_file, encoding="utf-8")
     file_handler.setLevel(config.file_log_level)

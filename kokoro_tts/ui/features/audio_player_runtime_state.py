@@ -29,7 +29,7 @@ class AudioPlayerRuntimeState:
     seek_programmatic: bool = False
     queue_index: int | None = None
     waveform: np.ndarray | None = None
-    state_path: Path | Any = Path(".audio_player_state.json")
+    state_path: Path | Any = Path("data/app_state.json")
     restore_path: Path | None = None
     restore_position_seconds: float = 0.0
     shortcuts_bound: bool = False

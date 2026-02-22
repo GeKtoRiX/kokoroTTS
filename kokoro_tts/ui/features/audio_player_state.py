@@ -6,6 +6,15 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+_AUDIO_PLAYER_SECTION = "audio_player"
+_AUDIO_PLAYER_LEGACY_KEYS = {
+    "volume",
+    "auto_next",
+    "last_path",
+    "last_position_seconds",
+    "queue_index",
+}
+
 
 def coerce_float(
     value: Any,
@@ -49,14 +58,29 @@ def load_audio_player_state(path: Path, logger) -> dict[str, Any]:
         return {}
     if not isinstance(payload, dict):
         return {}
-    return payload
+    section_payload = payload.get(_AUDIO_PLAYER_SECTION)
+    if isinstance(section_payload, dict):
+        return section_payload
+    if _AUDIO_PLAYER_LEGACY_KEYS.intersection(payload.keys()):
+        # Backward-compatible read for older dedicated audio-player state files.
+        return payload
+    return {}
 
 
 def save_audio_player_state(path: Path, payload: Mapping[str, Any], logger) -> None:
     try:
+        app_state_payload: dict[str, Any] = {}
+        if path.is_file():
+            try:
+                existing_payload = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(existing_payload, dict):
+                    app_state_payload = dict(existing_payload)
+            except Exception:
+                logger.exception("Failed to read audio player state")
         path.parent.mkdir(parents=True, exist_ok=True)
+        app_state_payload[_AUDIO_PLAYER_SECTION] = dict(payload)
         path.write_text(
-            json.dumps(dict(payload), ensure_ascii=False, indent=2),
+            json.dumps(app_state_payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
     except Exception:

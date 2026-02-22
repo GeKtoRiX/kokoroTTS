@@ -1,4 +1,5 @@
 """UI notification hooks for application layer."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

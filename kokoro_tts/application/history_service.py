@@ -1,4 +1,5 @@
 """History management for generated outputs."""
+
 from __future__ import annotations
 
 import os
@@ -40,3 +41,31 @@ class HistoryService:
             deleted_from_today,
         )
         return []
+
+    def remove_selected_history(self, history: list[str], selected_indices: list[int]) -> list[str]:
+        history_list = list(history or [])
+        normalized_set: set[int] = set()
+        for raw_index in selected_indices or []:
+            try:
+                index = int(raw_index)
+            except Exception:
+                continue
+            if 0 <= index < len(history_list):
+                normalized_set.add(index)
+        normalized = sorted(normalized_set)
+        if not normalized:
+            return history_list
+        selected_paths = [history_list[index] for index in normalized]
+        selected_set = set(selected_paths)
+        deleted_count = self.repository.delete_paths(selected_paths)
+        updated = [
+            value for index, value in enumerate(history_list) if index not in set(normalized)
+        ]
+        last_saved = list(getattr(self.state, "last_saved_paths", []) or [])
+        self.state.last_saved_paths = [path for path in last_saved if path not in selected_set]
+        self.logger.info(
+            "Deleted selected history items: selected=%s deleted=%s",
+            len(normalized),
+            deleted_count,
+        )
+        return updated[: self.history_limit]

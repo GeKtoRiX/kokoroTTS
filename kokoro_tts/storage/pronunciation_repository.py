@@ -1,4 +1,5 @@
 """Persistent pronunciation dictionary rules."""
+
 from __future__ import annotations
 
 import copy
@@ -97,7 +98,9 @@ class PronunciationRepository:
         for raw_lang, raw_entries in raw_rules.items():
             lang = self._normalize_language_key(raw_lang)
             if not lang:
-                self.logger.warning("Skipping pronunciation rules for unknown language: %s", raw_lang)
+                self.logger.warning(
+                    "Skipping pronunciation rules for unknown language: %s", raw_lang
+                )
                 continue
             if not isinstance(raw_entries, dict):
                 self.logger.warning(
@@ -129,9 +132,7 @@ class PronunciationRepository:
         try:
             mtime = os.path.getmtime(self.path)
         except FileNotFoundError:
-            changed = self._loaded and (
-                self._cached_mtime is not None or bool(self._cached_rules)
-            )
+            changed = self._loaded and (self._cached_mtime is not None or bool(self._cached_rules))
             self._cached_rules = {}
             self._cached_mtime = None
             self._loaded = True

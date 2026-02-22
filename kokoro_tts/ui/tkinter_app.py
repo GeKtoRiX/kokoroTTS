@@ -1,4 +1,5 @@
 """Tkinter desktop UI for Kokoro TTS."""
+
 from __future__ import annotations
 
 import os
@@ -6,6 +7,7 @@ import threading
 import time
 import tkinter as tk
 import sys
+import tkinter.font as tkfont
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, ttk
@@ -71,6 +73,7 @@ except Exception:  # pragma: no cover - dependency optional at import time
 
 class VlcAudioBackend:
     """Compatibility wrapper around the feature-module VLC backend."""
+
     def __init__(self) -> None:
         if vlc is None:
             raise RuntimeError("python-vlc is not available")
@@ -184,7 +187,8 @@ class TkinterDesktopApp(DesktopApp):
         self.set_tts_only_mode = set_tts_only_mode
         self.history_service = history_service
         self.export_supports_format = bool(
-            callable(export_morphology_sheet) and supports_export_format_arg(export_morphology_sheet)
+            callable(export_morphology_sheet)
+            and supports_export_format_arg(export_morphology_sheet)
         )
 
         self.default_lang = voice_language(DEFAULT_VOICE)
@@ -224,7 +228,7 @@ class TkinterDesktopApp(DesktopApp):
         self.stream_thread: threading.Thread | None = None
         self.accordion_setters: dict[str, Callable[[bool], None]] = {}
         self.audio_player_state = AudioPlayerRuntimeState(
-            state_path=Path(self.config.output_dir) / ".audio_player_state.json",
+            state_path=Path(self.config.app_state_path),
         )
         self.vlc_audio: VlcAudioBackend | None = None
         self.generate_in_progress = False
@@ -272,6 +276,12 @@ class TkinterDesktopApp(DesktopApp):
         self.voice_combo: ttk.Combobox | None = None
         self.token_output_text: tk.Text | None = None
         self.history_listbox: tk.Listbox | None = None
+        self.history_context_menu: tk.Menu | None = None
+        self.history_context_index: int | None = None
+        self.input_text_context_menu: tk.Menu | None = None
+        self.input_text_voice_menu: tk.Menu | None = None
+        self.input_text_number_menu: tk.Menu | None = None
+        self.input_text_voice_language_menus: list[tk.Menu] = []
         self.pronunciation_json_text: tk.Text | None = None
         self.export_path_var: tk.StringVar | None = None
         self.export_dataset_var: tk.StringVar | None = None
@@ -298,9 +308,15 @@ class TkinterDesktopApp(DesktopApp):
         self.audio_player_volume_frame: ttk.Frame | None = None
         self.audio_player_autonext_frame: ttk.Frame | None = None
         self.audio_player_status_frame: ttk.Frame | None = None
+        self.audio_player_minimal_check_btn: ttk.Checkbutton | None = None
+        self.audio_player_auto_next_check_btn: ttk.Checkbutton | None = None
+        self.audio_player_shortcut_tooltips: list[Any] = []
+        self.audio_player_last_space_pressed_at: float = 0.0
+        self.audio_player_double_space_stop_window_seconds: float = 0.35
         self.generate_btn: ttk.Button | None = None
         self.hardware_section_frame: ttk.Frame | None = None
         self.hardware_combo_widget: ttk.Combobox | None = None
+        self.input_text_target_lines: int = 24
 
         self._generate_tab_feature = GenerateTabFeature(self)
         self._stream_tab_feature = StreamTabFeature(self)
@@ -331,6 +347,7 @@ class TkinterDesktopApp(DesktopApp):
         self._configure_theme()
         self._init_tk_variables()
         self._build_layout()
+        self._bind_input_text_height_to_window()
         self._bind_audio_player_shortcuts()
         self._restore_audio_player_from_saved_state()
         assert self.runtime_mode_var is not None
@@ -391,8 +408,12 @@ class TkinterDesktopApp(DesktopApp):
         style.configure(".", background=bg, foreground=text_primary, font=("Segoe UI", 10))
         style.configure("AppBg.TFrame", background=bg)
         style.configure("TFrame", background=card_bg)
-        style.configure("TLabel", background=card_bg, foreground=text_primary, font=("Segoe UI", 10))
-        style.configure("Title.TLabel", background=bg, foreground=heading, font=("Segoe UI", 28, "bold"))
+        style.configure(
+            "TLabel", background=card_bg, foreground=text_primary, font=("Segoe UI", 10)
+        )
+        style.configure(
+            "Title.TLabel", background=bg, foreground=heading, font=("Segoe UI", 28, "bold")
+        )
         style.configure(
             "Card.TLabelframe",
             background=card_bg,
@@ -410,8 +431,12 @@ class TkinterDesktopApp(DesktopApp):
             font=("Segoe UI", 10, "bold"),
         )
         style.configure("Card.TFrame", background=card_bg)
-        style.configure("Card.TLabel", background=card_bg, foreground=text_primary, font=("Segoe UI", 10))
-        style.configure("CardMuted.TLabel", background=card_bg, foreground=text_muted, font=("Segoe UI", 9))
+        style.configure(
+            "Card.TLabel", background=card_bg, foreground=text_primary, font=("Segoe UI", 10)
+        )
+        style.configure(
+            "CardMuted.TLabel", background=card_bg, foreground=text_muted, font=("Segoe UI", 9)
+        )
         style.configure(
             "Inset.TFrame",
             background=card_bg,
@@ -423,10 +448,24 @@ class TkinterDesktopApp(DesktopApp):
         )
         style.configure("PlayerShell.TFrame", background=card_bg, borderwidth=0, relief="flat")
         style.configure("PlayerWave.TFrame", background=card_bg, borderwidth=0, relief="flat")
-        style.configure("PlayerTitle.TLabel", background=card_bg, foreground=heading, font=("Segoe UI", 11, "bold"))
-        style.configure("PlayerMeta.TLabel", background=card_bg, foreground=text_muted, font=("Segoe UI", 9))
-        style.configure("PlayerTime.TLabel", background=card_bg, foreground=text_primary, font=("Consolas", 10, "bold"))
-        style.configure("PlayerStatus.TLabel", background=card_bg, foreground=text_muted, font=("Segoe UI", 9))
+        style.configure(
+            "PlayerTitle.TLabel",
+            background=card_bg,
+            foreground=heading,
+            font=("Segoe UI", 11, "bold"),
+        )
+        style.configure(
+            "PlayerMeta.TLabel", background=card_bg, foreground=text_muted, font=("Segoe UI", 9)
+        )
+        style.configure(
+            "PlayerTime.TLabel",
+            background=card_bg,
+            foreground=text_primary,
+            font=("Consolas", 10, "bold"),
+        )
+        style.configure(
+            "PlayerStatus.TLabel", background=card_bg, foreground=text_muted, font=("Segoe UI", 9)
+        )
         style.configure("AccordionSection.TFrame", background=card_bg, borderwidth=0, relief="flat")
         style.configure("AccordionHeader.TFrame", background=panel_bg)
         style.configure(
@@ -444,9 +483,24 @@ class TkinterDesktopApp(DesktopApp):
         style.map(
             "TButton",
             background=[("active", card_bg), ("pressed", card_bg), ("disabled", card_bg)],
-            bordercolor=[("active", accent_hover), ("pressed", accent), ("disabled", disabled), ("!disabled", border)],
-            lightcolor=[("active", accent_hover), ("pressed", accent), ("disabled", disabled), ("!disabled", border)],
-            darkcolor=[("active", accent_hover), ("pressed", accent), ("disabled", disabled), ("!disabled", border)],
+            bordercolor=[
+                ("active", accent_hover),
+                ("pressed", accent),
+                ("disabled", disabled),
+                ("!disabled", border),
+            ],
+            lightcolor=[
+                ("active", accent_hover),
+                ("pressed", accent),
+                ("disabled", disabled),
+                ("!disabled", border),
+            ],
+            darkcolor=[
+                ("active", accent_hover),
+                ("pressed", accent),
+                ("disabled", disabled),
+                ("!disabled", border),
+            ],
             foreground=[("disabled", disabled)],
         )
         style.configure(
@@ -544,9 +598,24 @@ class TkinterDesktopApp(DesktopApp):
         ):
             style.map(
                 button_style,
-                bordercolor=[("active", accent_hover), ("pressed", accent), ("disabled", disabled), ("!disabled", border)],
-                lightcolor=[("active", accent_hover), ("pressed", accent), ("disabled", disabled), ("!disabled", border)],
-                darkcolor=[("active", accent_hover), ("pressed", accent), ("disabled", disabled), ("!disabled", border)],
+                bordercolor=[
+                    ("active", accent_hover),
+                    ("pressed", accent),
+                    ("disabled", disabled),
+                    ("!disabled", border),
+                ],
+                lightcolor=[
+                    ("active", accent_hover),
+                    ("pressed", accent),
+                    ("disabled", disabled),
+                    ("!disabled", border),
+                ],
+                darkcolor=[
+                    ("active", accent_hover),
+                    ("pressed", accent),
+                    ("disabled", disabled),
+                    ("!disabled", border),
+                ],
             )
         for button_style, radius in (
             ("TButton", 8),
@@ -609,13 +678,28 @@ class TkinterDesktopApp(DesktopApp):
             "App.TNotebook.Tab",
             background=[("selected", card_bg), ("active", tab_active), ("!selected", tab_inactive)],
             foreground=[("selected", heading), ("!selected", text_muted)],
-            expand=[("selected", (0, 0, 0, 0)), ("active", (0, 0, 0, 0)), ("!selected", (0, 0, 0, 0))],
+            expand=[
+                ("selected", (0, 0, 0, 0)),
+                ("active", (0, 0, 0, 0)),
+                ("!selected", (0, 0, 0, 0)),
+            ],
             padding=[("selected", (14, 8)), ("active", (14, 8)), ("!selected", (14, 8))],
         )
         style.configure("TLabelframe", background=card_bg, borderwidth=1, relief="solid")
-        style.configure("TLabelframe.Label", background=card_bg, foreground=text_primary, font=("Segoe UI", 10, "bold"))
-        style.configure("TEntry", fieldbackground=input_bg, foreground=text_primary, bordercolor=border)
-        style.map("TEntry", fieldbackground=[("disabled", button_disabled_bg)], foreground=[("disabled", disabled)])
+        style.configure(
+            "TLabelframe.Label",
+            background=card_bg,
+            foreground=text_primary,
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.configure(
+            "TEntry", fieldbackground=input_bg, foreground=text_primary, bordercolor=border
+        )
+        style.map(
+            "TEntry",
+            fieldbackground=[("disabled", button_disabled_bg)],
+            foreground=[("disabled", disabled)],
+        )
         style.configure(
             "TSpinbox",
             fieldbackground=input_bg,
@@ -638,13 +722,37 @@ class TkinterDesktopApp(DesktopApp):
         )
         style.map(
             "TCombobox",
-            fieldbackground=[("readonly", input_bg), ("!disabled", input_bg), ("disabled", button_disabled_bg)],
+            fieldbackground=[
+                ("readonly", input_bg),
+                ("!disabled", input_bg),
+                ("disabled", button_disabled_bg),
+            ],
             background=[("readonly", input_bg), ("active", input_bg), ("!disabled", input_bg)],
-            foreground=[("readonly", text_primary), ("!disabled", text_primary), ("disabled", disabled)],
-            arrowcolor=[("readonly", text_primary), ("active", text_primary), ("disabled", disabled)],
-            bordercolor=[("focus", combo_focus), ("active", combo_border), ("!disabled", combo_border)],
-            lightcolor=[("focus", combo_focus), ("active", combo_border), ("!disabled", combo_border)],
-            darkcolor=[("focus", combo_focus), ("active", combo_border), ("!disabled", combo_border)],
+            foreground=[
+                ("readonly", text_primary),
+                ("!disabled", text_primary),
+                ("disabled", disabled),
+            ],
+            arrowcolor=[
+                ("readonly", text_primary),
+                ("active", text_primary),
+                ("disabled", disabled),
+            ],
+            bordercolor=[
+                ("focus", combo_focus),
+                ("active", combo_border),
+                ("!disabled", combo_border),
+            ],
+            lightcolor=[
+                ("focus", combo_focus),
+                ("active", combo_border),
+                ("!disabled", combo_border),
+            ],
+            darkcolor=[
+                ("focus", combo_focus),
+                ("active", combo_border),
+                ("!disabled", combo_border),
+            ],
         )
         style.configure(
             "Card.TCheckbutton",
@@ -805,7 +913,9 @@ class TkinterDesktopApp(DesktopApp):
     def _init_tk_variables(self) -> None:
         assert self.root is not None
         player_state = self._load_audio_player_state()
-        saved_volume = self._coerce_float(player_state.get("volume"), default=1.0, min_value=0.0, max_value=1.5)
+        saved_volume = self._coerce_float(
+            player_state.get("volume"), default=1.0, min_value=0.0, max_value=1.5
+        )
         saved_auto_next = self._coerce_bool(player_state.get("auto_next"), default=True)
         saved_position = self._coerce_float(
             player_state.get("last_position_seconds"),
@@ -832,8 +942,12 @@ class TkinterDesktopApp(DesktopApp):
         self.style_var = tk.StringVar(master=self.root, value=DEFAULT_STYLE_PRESET)
         self.pause_var = tk.DoubleVar(master=self.root, value=0.3)
         self.output_format_var = tk.StringVar(master=self.root, value=self.default_output_format)
-        self.normalize_times_var = tk.BooleanVar(master=self.root, value=self.config.normalize_times)
-        self.normalize_numbers_var = tk.BooleanVar(master=self.root, value=self.config.normalize_numbers)
+        self.normalize_times_var = tk.BooleanVar(
+            master=self.root, value=self.config.normalize_times
+        )
+        self.normalize_numbers_var = tk.BooleanVar(
+            master=self.root, value=self.config.normalize_numbers
+        )
         self.advanced_var = tk.BooleanVar(master=self.root, value=False)
         self.runtime_mode_var = tk.StringVar(master=self.root, value=self.runtime_mode_value)
         self.runtime_mode_status_var = tk.StringVar(
@@ -863,7 +977,9 @@ class TkinterDesktopApp(DesktopApp):
         self.morph_limit_var = tk.IntVar(master=self.root, value=100)
         self.morph_offset_var = tk.IntVar(master=self.root, value=0)
 
-        self.audio_player_volume_var.trace_add("write", lambda *_args: self._on_audio_player_volume_var_updated())
+        self.audio_player_volume_var.trace_add(
+            "write", lambda *_args: self._on_audio_player_volume_var_updated()
+        )
         self.audio_player_auto_next_var.trace_add(
             "write",
             lambda *_args: self._save_audio_player_state(),
@@ -889,7 +1005,9 @@ class TkinterDesktopApp(DesktopApp):
             highlightthickness=0,
             borderwidth=0,
         )
-        self.left_scroll = self._create_scrollbar(left, orient=tk.VERTICAL, command=self.left_canvas.yview)
+        self.left_scroll = self._create_scrollbar(
+            left, orient=tk.VERTICAL, command=self.left_canvas.yview
+        )
         self.left_canvas.configure(yscrollcommand=self.left_scroll.set)
         self.left_canvas.pack(side="left", fill="both", expand=True)
         self.left_scroll.pack(side="right", fill="y", padx=(6, 0))
@@ -956,9 +1074,11 @@ class TkinterDesktopApp(DesktopApp):
         input_text_wrap, self.input_text = self._create_text_with_scrollbar(
             input_shell,
             wrap=tk.WORD,
-            height=8,
+            height=self.input_text_target_lines,
             font=("Courier New", 10),
         )
+        self._configure_input_text_undo_redo()
+        self._configure_input_text_context_menu()
         input_text_wrap.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 8))
 
         quick_shell = ttk.Frame(parent, style="Card.TFrame")
@@ -1013,7 +1133,9 @@ class TkinterDesktopApp(DesktopApp):
             to=2.0,
             variable=self.speed_var,
         ).grid(row=0, column=0, sticky="ew")
-        speed_value_label = ttk.Label(speed_row, text=f"{float(self.speed_var.get()):.2f}", style="Card.TLabel")
+        speed_value_label = ttk.Label(
+            speed_row, text=f"{float(self.speed_var.get()):.2f}", style="Card.TLabel"
+        )
         speed_value_label.grid(row=0, column=1, sticky="e", padx=(8, 0))
         self.speed_var.trace_add(
             "write",
@@ -1037,7 +1159,9 @@ class TkinterDesktopApp(DesktopApp):
             to=2.0,
             variable=self.pause_var,
         ).grid(row=0, column=0, sticky="ew")
-        pause_value_label = ttk.Label(pause_row, text=f"{float(self.pause_var.get()):.2f}", style="Card.TLabel")
+        pause_value_label = ttk.Label(
+            pause_row, text=f"{float(self.pause_var.get()):.2f}", style="Card.TLabel"
+        )
         pause_value_label.grid(row=0, column=1, sticky="e", padx=(8, 0))
         self.pause_var.trace_add(
             "write",
@@ -1158,7 +1282,9 @@ class TkinterDesktopApp(DesktopApp):
             borderwidth=1,
         )
         self._style_voice_mix_listbox(self.voice_mix_listbox)
-        mix_scroll = self._create_scrollbar(mix_list_wrap, orient=tk.VERTICAL, command=self.voice_mix_listbox.yview)
+        mix_scroll = self._create_scrollbar(
+            mix_list_wrap, orient=tk.VERTICAL, command=self.voice_mix_listbox.yview
+        )
         self.voice_mix_listbox.configure(yscrollcommand=mix_scroll.set)
         self.voice_mix_listbox.grid(row=0, column=0, sticky="ew", padx=(6, 0), pady=6)
         mix_scroll.grid(row=0, column=1, sticky="ns", padx=(4, 6), pady=6)
@@ -1250,7 +1376,9 @@ class TkinterDesktopApp(DesktopApp):
         )
         self.pronunciation_json_text.insert("1.0", "{}")
         pronunciation_text_wrap.grid(row=0, column=0, sticky="ew", padx=8, pady=(2, 6))
-        ttk.Label(pronunciation_content, textvariable=self.pronunciation_status_var, wraplength=420).grid(
+        ttk.Label(
+            pronunciation_content, textvariable=self.pronunciation_status_var, wraplength=420
+        ).grid(
             row=1,
             column=0,
             sticky="ew",
@@ -1443,7 +1571,9 @@ class TkinterDesktopApp(DesktopApp):
         )
 
     def _create_scrollbar(self, parent: tk.Widget, *, orient: str, command) -> ttk.Scrollbar:
-        style_name = "Vertical.TScrollbar" if str(orient).lower() == "vertical" else "Horizontal.TScrollbar"
+        style_name = (
+            "Vertical.TScrollbar" if str(orient).lower() == "vertical" else "Horizontal.TScrollbar"
+        )
         return ttk.Scrollbar(parent, orient=orient, command=command, style=style_name)
 
     def _create_text_with_scrollbar(
@@ -1471,6 +1601,232 @@ class TkinterDesktopApp(DesktopApp):
         text_widget.grid(row=0, column=0, sticky="nsew")
         y_scroll.grid(row=0, column=1, sticky="ns")
         return container, text_widget
+
+    def _bind_input_text_height_to_window(self) -> None:
+        if self.root is None:
+            return
+        self.root.bind("<Configure>", self._on_root_resize_sync_input_text_height, add="+")
+        self.root.after(0, self._sync_input_text_height)
+
+    def _configure_input_text_undo_redo(self) -> None:
+        if self.input_text is None:
+            return
+        self.input_text.configure(undo=True, autoseparators=True, maxundo=-1)
+        self.input_text.bind("<Control-z>", self._on_input_text_undo, add="+")
+        self.input_text.bind("<Control-Z>", self._on_input_text_undo, add="+")
+        self.input_text.bind("<Control-y>", self._on_input_text_redo, add="+")
+        self.input_text.bind("<Control-Y>", self._on_input_text_redo, add="+")
+
+    def _configure_input_text_context_menu(self) -> None:
+        if self.input_text is None:
+            return
+        self.input_text.bind("<Button-3>", self._on_input_text_context_menu, add="+")
+        self.input_text.bind("<Button-2>", self._on_input_text_context_menu, add="+")
+
+    def _style_popup_menu(self, menu: tk.Menu) -> None:
+        options = {
+            "background": getattr(self, "ui_surface", "#031003"),
+            "foreground": "#e6e8ef",
+            "activebackground": getattr(self, "select_color", "#00ff41"),
+            "activeforeground": getattr(self, "ui_surface", "#031003"),
+            "disabledforeground": "#6f7888",
+            "selectcolor": "#e6e8ef",
+            "relief": "flat",
+            "borderwidth": 1,
+            "font": ("Segoe UI", 10),
+        }
+        for key, value in options.items():
+            try:
+                menu.configure(**{key: value})
+            except tk.TclError:
+                continue
+        border = getattr(self, "ui_border", "#00a83a")
+        for key in ("highlightthickness", "highlightcolor", "highlightbackground"):
+            try:
+                if key == "highlightthickness":
+                    menu.configure(highlightthickness=1)
+                else:
+                    menu.configure(**{key: border})
+            except tk.TclError:
+                continue
+
+    def _create_styled_menu(self, parent: tk.Misc) -> tk.Menu:
+        menu = tk.Menu(parent, tearoff=0)
+        self._style_popup_menu(menu)
+        return menu
+
+    def _ensure_input_text_context_menu(self) -> tk.Menu | None:
+        if self.root is None:
+            return None
+        if self.input_text_context_menu is None:
+            self.input_text_context_menu = self._create_styled_menu(self.root)
+            self.input_text_voice_menu = self._create_styled_menu(self.input_text_context_menu)
+            self.input_text_number_menu = self._create_styled_menu(self.input_text_context_menu)
+            self.input_text_context_menu.add_cascade(
+                label="Insert voice tag",
+                menu=self.input_text_voice_menu,
+            )
+            self.input_text_context_menu.add_cascade(
+                label="Insert number tag",
+                menu=self.input_text_number_menu,
+            )
+        return self.input_text_context_menu
+
+    def _rebuild_input_text_voice_menu(self) -> None:
+        if self.input_text_voice_menu is None:
+            return
+        self.input_text_voice_menu.delete(0, tk.END)
+        self.input_text_voice_language_menus = []
+
+        current_voice = ""
+        if self.voice_var is not None:
+            current_voice = str(self.voice_var.get() or "").strip()
+        if current_voice:
+            self.input_text_voice_menu.add_command(
+                label=f"Current: [voice={current_voice}]",
+                command=lambda selected_voice=current_voice: self._insert_input_text_voice_tag(
+                    selected_voice
+                ),
+            )
+            self.input_text_voice_menu.add_separator()
+
+        grouped_voices: dict[str, list[str]] = {}
+        seen: set[str] = set()
+        for _label, voice_id in get_voice_choices():
+            normalized = str(voice_id or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            lang_code = voice_language(normalized, default=self.default_lang)
+            grouped_voices.setdefault(lang_code, []).append(normalized)
+        if not grouped_voices:
+            grouped_voices = {self.default_lang: [self.default_voice]}
+
+        ordered_codes = [code for code in available_language_codes() if code in grouped_voices]
+        ordered_codes.extend(sorted(code for code in grouped_voices if code not in ordered_codes))
+        for lang_code in ordered_codes:
+            voices = grouped_voices.get(lang_code) or []
+            if not voices:
+                continue
+            lang_menu = self._create_styled_menu(self.input_text_voice_menu)
+            self.input_text_voice_language_menus.append(lang_menu)
+            for voice_id in voices:
+                lang_menu.add_command(
+                    label=f"[voice={voice_id}]",
+                    command=lambda selected_voice=voice_id: self._insert_input_text_voice_tag(
+                        selected_voice
+                    ),
+                )
+            self.input_text_voice_menu.add_cascade(
+                label=self._language_display_from_code(lang_code),
+                menu=lang_menu,
+            )
+
+    def _insert_input_text_voice_tag(self, voice_id: str) -> None:
+        normalized = str(voice_id or "").strip()
+        if not normalized:
+            return
+        tag = f"[voice={normalized}]"
+        self._insert_input_text_snippet(tag)
+
+    def _rebuild_input_text_number_menu(self) -> None:
+        if self.input_text_number_menu is None:
+            return
+        self.input_text_number_menu.delete(0, tk.END)
+        self.input_text_number_menu.add_command(
+            label="[date]",
+            command=lambda: self._insert_input_text_snippet("[date]"),
+        )
+        self.input_text_number_menu.add_command(
+            label="[tnumber]",
+            command=lambda: self._insert_input_text_snippet("[tnumber]"),
+        )
+
+    def _insert_input_text_snippet(self, snippet: str) -> None:
+        if self.input_text is None:
+            return
+        value = str(snippet or "")
+        if not value:
+            return
+        self.input_text.insert(tk.INSERT, value)
+        self.input_text.focus_set()
+        if self.generate_status_var is not None:
+            self.generate_status_var.set(f"Inserted {value}")
+
+    def _on_input_text_context_menu(self, event: tk.Event[Any]) -> str:
+        widget = getattr(event, "widget", None)
+        target = widget if isinstance(widget, tk.Text) else self.input_text
+        if target is None:
+            return "break"
+        try:
+            index = target.index(f"@{int(event.x)},{int(event.y)}")
+            target.mark_set(tk.INSERT, index)
+            target.see(index)
+        except Exception:
+            pass
+        target.focus_set()
+        menu = self._ensure_input_text_context_menu()
+        if menu is None:
+            return "break"
+        self._rebuild_input_text_voice_menu()
+        self._rebuild_input_text_number_menu()
+        try:
+            menu.tk_popup(int(event.x_root), int(event.y_root))
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+        return "break"
+
+    def _on_input_text_undo(self, event: tk.Event[Any]) -> str:
+        widget = getattr(event, "widget", None)
+        target = widget if isinstance(widget, tk.Text) else self.input_text
+        if target is None:
+            return "break"
+        try:
+            target.edit_undo()
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _on_input_text_redo(self, event: tk.Event[Any]) -> str:
+        widget = getattr(event, "widget", None)
+        target = widget if isinstance(widget, tk.Text) else self.input_text
+        if target is None:
+            return "break"
+        try:
+            target.edit_redo()
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _on_root_resize_sync_input_text_height(self, _event: tk.Event[Any]) -> None:
+        self._sync_input_text_height()
+
+    def _sync_input_text_height(self) -> None:
+        if self.root is None or self.input_text is None:
+            return
+        app_height = int(self.root.winfo_height())
+        if app_height <= 1:
+            app_height = 900
+            geometry = str(self.root.wm_geometry() or "")
+            if "x" in geometry:
+                try:
+                    app_height = max(1, int(geometry.split("x", 1)[1].split("+", 1)[0]))
+                except Exception:
+                    app_height = 900
+        try:
+            line_height = int(
+                tkfont.nametofont(str(self.input_text.cget("font"))).metrics("linespace")
+            )
+        except Exception:
+            line_height = 18
+        line_height = max(1, line_height)
+        target_lines = max(10, int((float(app_height) * 0.5) / float(line_height)))
+        if target_lines != int(self.input_text.cget("height")):
+            self.input_text.configure(height=target_lines)
+        self.input_text_target_lines = target_lines
 
     def _style_listbox(self, widget: tk.Listbox) -> None:
         focus = getattr(self, "focus_color", "#36ff6f")
@@ -1520,6 +1876,7 @@ class TkinterDesktopApp(DesktopApp):
         self._build_generate_tab(generate_tab)
         self._build_stream_tab(stream_tab)
         self._build_morph_tab(morph_tab)
+
     def _build_generate_tab(self, parent: ttk.Frame) -> None:
         self._generate_tab_feature.build_tab(parent)
 
@@ -1678,9 +2035,26 @@ class TkinterDesktopApp(DesktopApp):
             "[voice=af_heart,am_michael]\n",
             ("code",),
         )
+        widget.insert(
+            tk.END,
+            "Explicit number templates:\n",
+            ("body",),
+        )
+        widget.insert(
+            tk.END,
+            "[date]1993  |  [date=2006]\n",
+            ("code",),
+        )
+        widget.insert(
+            tk.END,
+            "[tnumber]0123411  |  [tnumber=1234567]\n",
+            ("code",),
+        )
         widget.configure(state=tk.DISABLED)
+
     def _build_stream_tab(self, parent: ttk.Frame) -> None:
         self._stream_tab_feature.build_tab(parent)
+
     def _build_morph_tab(self, parent: ttk.Frame) -> None:
         self._morphology_tab_feature.build_tab(parent)
 
@@ -1771,7 +2145,9 @@ class TkinterDesktopApp(DesktopApp):
         self.language_var.set(selected_lang)
         self.language_display_var.set(self._language_display_from_code(selected_lang))
         self.voice_var.set(current_voice)
-        self._set_mix_listbox_values(voice_ids, selected=[voice for voice in voice_ids if voice in old_mix])
+        self._set_mix_listbox_values(
+            voice_ids, selected=[voice for voice in voice_ids if voice in old_mix]
+        )
 
     def _on_voice_change(self) -> None:
         assert self.language_var is not None
@@ -1867,7 +2243,9 @@ class TkinterDesktopApp(DesktopApp):
         elif not visible and tab_id in existing:
             self.notebook.forget(frame)
 
-    def _threaded(self, work: Callable[[], Any], on_success: Callable[[Any], None] | None = None) -> None:
+    def _threaded(
+        self, work: Callable[[], Any], on_success: Callable[[Any], None] | None = None
+    ) -> None:
         def _runner() -> None:
             try:
                 result = work()
@@ -1944,12 +2322,16 @@ class TkinterDesktopApp(DesktopApp):
             return
         widget.delete("1.0", tk.END)
         widget.insert("1.0", text or "")
+
     def _base_generation_kwargs(self) -> dict[str, Any]:
         return self._generate_tab_feature.base_generation_kwargs()
+
     def _on_generate(self) -> None:
         self._generate_tab_feature.on_generate()
+
     def _on_tokenize(self) -> None:
         self._generate_tab_feature.on_tokenize()
+
     def _sync_audio_player_feature_runtime(self) -> None:
         configure_audio_player_runtime_modules(
             sd_module=sd,
@@ -1972,6 +2354,7 @@ class TkinterDesktopApp(DesktopApp):
         if name.startswith("_") and not name.startswith("__"):
             feature_attr = getattr(AudioPlayerFeature, name, None)
             if callable(feature_attr):
+
                 def _delegated(*args, _name=name, **kwargs):
                     self._sync_audio_player_feature_runtime()
                     feature_method = getattr(self._audio_player_feature, _name)
@@ -1983,8 +2366,10 @@ class TkinterDesktopApp(DesktopApp):
 
     def _on_stream_start(self) -> None:
         self._stream_tab_feature.on_stream_start(sd_module=sd)
+
     def _on_stream_stop(self) -> None:
         self._stream_tab_feature.on_stream_stop(sd_module=sd)
+
     def _finalize_stream_buttons(self) -> None:
         self._stream_tab_feature.finalize_stream_buttons()
 
@@ -2053,10 +2438,13 @@ class TkinterDesktopApp(DesktopApp):
             self.pronunciation_status_var.set(status)
 
         self._threaded(work, on_success)
+
     def _on_export_morphology(self) -> None:
         self._morphology_tab_feature.on_export_morphology()
+
     def _on_morphology_preview_dataset_change(self) -> None:
         self._morphology_tab_feature.on_morphology_preview_dataset_change()
+
     def _project_morphology_preview_rows(
         self,
         dataset: str,
@@ -2070,11 +2458,15 @@ class TkinterDesktopApp(DesktopApp):
         table_update: dict[str, Any],
     ) -> tuple[list[str], list[list[str]]]:
         return project_morphology_preview_rows(dataset, table_update, max_rows=50)
+
     def _build_pos_table_preview_from_lexemes(self, table_update: dict[str, Any]) -> dict[str, Any]:
         return self._morphology_tab_feature.build_pos_table_preview_from_lexemes(table_update)
 
-    def _build_pos_table_preview_from_lexemes_impl(self, table_update: dict[str, Any]) -> dict[str, Any]:
+    def _build_pos_table_preview_from_lexemes_impl(
+        self, table_update: dict[str, Any]
+    ) -> dict[str, Any]:
         return build_pos_table_preview_from_lexemes(table_update, max_rows=50)
+
     def _set_morphology_preview_table(
         self,
         headers: list[str],
@@ -2099,10 +2491,13 @@ class TkinterDesktopApp(DesktopApp):
 
     def _count_unique_non_empty_cells(self, rows: list[list[str]]) -> int:
         return count_unique_non_empty_cells(rows)
+
     def _on_morph_refresh(self) -> None:
         self._morphology_tab_feature.on_morph_refresh()
+
     def _apply_table_update(self, table_update: dict[str, Any]) -> None:
         self._morphology_tab_feature.apply_table_update(table_update)
+
 
 def create_tkinter_app(
     *,

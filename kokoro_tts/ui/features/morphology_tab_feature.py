@@ -71,7 +71,9 @@ class MorphologyTabFeature:
         table_wrap.pack(fill="both", expand=True)
         ui.morph_tree = ttk.Treeview(table_wrap, show="headings", style="Treeview")
         y_scroll = ui._create_scrollbar(table_wrap, orient=tk.VERTICAL, command=ui.morph_tree.yview)
-        x_scroll = ui._create_scrollbar(table_wrap, orient=tk.HORIZONTAL, command=ui.morph_tree.xview)
+        x_scroll = ui._create_scrollbar(
+            table_wrap, orient=tk.HORIZONTAL, command=ui.morph_tree.xview
+        )
         ui.morph_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
         ui.morph_tree.grid(row=0, column=0, sticky="nsew")
         y_scroll.grid(row=0, column=1, sticky="ns")
@@ -112,9 +114,15 @@ class MorphologyTabFeature:
         ui = self.host
         if ui.morph_preview_status_var is None:
             return
-        dataset = str(ui.export_dataset_var.get() if ui.export_dataset_var is not None else "lexemes").strip().lower()
+        dataset = (
+            str(ui.export_dataset_var.get() if ui.export_dataset_var is not None else "lexemes")
+            .strip()
+            .lower()
+        )
         if not callable(ui.morphology_db_view):
-            ui._set_morphology_preview_table(["No data"], [["No data"]], rows_count=0, unique_count=0)
+            ui._set_morphology_preview_table(
+                ["No data"], [["No data"]], rows_count=0, unique_count=0
+            )
             return
         ui.morph_preview_status_var.set("Rows: 0 | Unique: 0 | Last updated: loading...")
 
@@ -131,7 +139,9 @@ class MorphologyTabFeature:
             headers, rows = ui._project_morphology_preview_rows(selected_dataset, table_update)
             if not rows:
                 fallback_headers = headers if headers else ["No data"]
-                ui._set_morphology_preview_table(fallback_headers, [["No data"]], rows_count=0, unique_count=0)
+                ui._set_morphology_preview_table(
+                    fallback_headers, [["No data"]], rows_count=0, unique_count=0
+                )
                 return
             ui._set_morphology_preview_table(
                 headers,

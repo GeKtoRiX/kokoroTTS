@@ -1,4 +1,5 @@
 """Detection of phrasal verbs and idioms in English text."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -172,7 +173,9 @@ def _extract_inventory_phrasals(doc, wordnet_phrasal: set[str]) -> list[Expressi
             in_between = tokens[verb_index + 1 : particle_index]
             if any(_is_sentence_break_token(item) for item in in_between):
                 break
-            if any(str(getattr(item, "pos_", "")).upper() in {"VERB", "AUX"} for item in in_between):
+            if any(
+                str(getattr(item, "pos_", "")).upper() in {"VERB", "AUX"} for item in in_between
+            ):
                 continue
 
             start = int(getattr(verb_token, "idx", 0))
@@ -249,10 +252,7 @@ def _extract_phrasemachine_phrasals(doc, wordnet_phrasal: set[str]) -> list[Expr
         return []
 
     tokens = [str(getattr(token, "text", "")) for token in doc]
-    pos_tags = [
-        str(getattr(token, "tag_", "") or getattr(token, "pos_", ""))
-        for token in doc
-    ]
+    pos_tags = [str(getattr(token, "tag_", "") or getattr(token, "pos_", "")) for token in doc]
     if not tokens:
         return []
 
@@ -413,7 +413,7 @@ def _idiom_supported_by_context(doc, item: ExpressionItem, simple_lesk, wn) -> b
     if not doc_text:
         return True
     if 0 <= item.start < item.end <= len(doc_text):
-        phrase_text = doc_text[item.start:item.end]
+        phrase_text = doc_text[item.start : item.end]
     else:
         phrase_text = item.text
     normalized_phrase = phrase_text.strip() or item.text.strip()
@@ -681,11 +681,7 @@ def _load_idiom_lemma_matcher():
 
     matcher = Matcher(nlp.vocab, validate=False)
     patterns = [
-        [
-            _idiom_match_token_pattern(token)
-            for token in phrase.split()
-        ]
-        for phrase in sorted(idioms)
+        [_idiom_match_token_pattern(token) for token in phrase.split()] for phrase in sorted(idioms)
     ]
     if not patterns:
         return None

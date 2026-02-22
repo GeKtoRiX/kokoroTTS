@@ -1,0 +1,19 @@
+         144003 function calls in 0.109 seconds
+
+   Ordered by: cumulative time
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.001    0.001    0.444    0.444 D:\pythonProjects\kokoroTTS\kokoro_tts\storage\morphology_repository.py:533(_collect_ingest_rows)
+      960    0.095    0.000    0.438    0.000 D:\pythonProjects\kokoroTTS\kokoro_tts\storage\morphology_repository.py:675(_append_token_rows)
+   135360    0.009    0.000    0.009    0.000 {method 'append' of 'list' objects}
+      960    0.001    0.000    0.003    0.000 D:\pythonProjects\kokoroTTS\kokoro_tts\storage\morphology_repository.py:706(_append_expression_rows)
+      960    0.002    0.000    0.002    0.000 <string>:2(__init__)
+      960    0.000    0.000    0.001    0.000 D:\pythonProjects\kokoroTTS\kokoro_tts\storage\morphology_repository.py:652(_segment_templates)
+      960    0.001    0.000    0.001    0.000 D:\pythonProjects\kokoroTTS\kokoro_tts\storage\morphology_repository.py:738(_cache_lookup)
+      960    0.000    0.000    0.000    0.000 {method 'move_to_end' of 'collections.OrderedDict' objects}
+      960    0.000    0.000    0.000    0.000 {method 'get' of 'dict' objects}
+      961    0.000    0.000    0.000    0.000 {method 'strip' of 'str' objects}
+      960    0.000    0.000    0.000    0.000 {method '__exit__' of '_thread.lock' objects}
+        1    0.000    0.000    0.000    0.000 {method 'disable' of '_lsprof.Profiler' objects}
+
+

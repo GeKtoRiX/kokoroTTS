@@ -1,0 +1,139 @@
+.
+|-- .github
+|   `-- workflows
+|       `-- ci.yml
+|-- data
+|   |-- cache
+|   |   `-- torch
+|   |-- app_state.json
+|   |-- morphology.sqlite3
+|   `-- pronunciation_rules.json
+|-- docs
+|   |-- project-map
+|   |   |-- deps-graph.mmd
+|   |   |-- deps-graph.tsv
+|   |   |-- env.md
+|   |   |-- performance.md
+|   |   |-- routes.md
+|   |   |-- schema.md
+|   |   `-- structure.txt
+|   `-- PROJECT_MAP.md
+|-- kokoro_tts
+|   |-- application
+|   |   |-- __init__.py
+|   |   |-- bootstrap.py
+|   |   |-- context.py
+|   |   |-- history_service.py
+|   |   |-- local_api.py
+|   |   |-- morphology_projection.py
+|   |   |-- ports.py
+|   |   |-- state.py
+|   |   `-- ui_hooks.py
+|   |-- domain
+|   |   |-- __init__.py
+|   |   |-- audio_postfx.py
+|   |   |-- expressions.py
+|   |   |-- lexeme_checks.py
+|   |   |-- morphology.py
+|   |   |-- morphology_datasets.py
+|   |   |-- normalization.py
+|   |   |-- splitting.py
+|   |   |-- style.py
+|   |   |-- text_utils.py
+|   |   `-- voice.py
+|   |-- integrations
+|   |   |-- __init__.py
+|   |   |-- ffmpeg.py
+|   |   |-- model_manager.py
+|   |   `-- spaces_gpu.py
+|   |-- storage
+|   |   |-- __init__.py
+|   |   |-- audio_writer.py
+|   |   |-- history_repository.py
+|   |   |-- morphology_projection.py
+|   |   |-- morphology_repository.py
+|   |   `-- pronunciation_repository.py
+|   |-- ui
+|   |   |-- features
+|   |   |   |-- __init__.py
+|   |   |   |-- audio_backend.py
+|   |   |   |-- audio_player_feature.py
+|   |   |   |-- audio_player_runtime_state.py
+|   |   |   |-- audio_player_state.py
+|   |   |   |-- generate_tab_feature.py
+|   |   |   |-- morphology_tab_feature.py
+|   |   |   `-- stream_tab_feature.py
+|   |   |-- __init__.py
+|   |   |-- common.py
+|   |   |-- desktop_types.py
+|   |   `-- tkinter_app.py
+|   |-- __init__.py
+|   |-- config.py
+|   |-- constants.py
+|   |-- logging_config.py
+|   |-- main.py
+|   |-- runtime.py
+|   `-- utils.py
+|-- scripts
+|   |-- bat
+|   |   |-- cleanup_project.bat
+|   |   `-- clear_morphology_db.bat
+|   |-- benchmark_morph_ingest.py
+|   |-- bootstrap_local.ps1
+|   |-- check_english_lexemes.py
+|   |-- checkout_from_git_objects.py
+|   |-- doctor.ps1
+|   |-- generate_project_map.py
+|   |-- profile_tts_inference.py
+|   `-- smoke_full.ps1
+|-- tests
+|   |-- app
+|   |   |-- test_app_entrypoints.py
+|   |   |-- test_app_interface_coverage.py
+|   |   `-- test_app_runtime_branches.py
+|   |-- application
+|   |   |-- test_bootstrap.py
+|   |   |-- test_history_layers.py
+|   |   `-- test_state.py
+|   |-- config
+|   |   `-- test_utils_config.py
+|   |-- contracts
+|   |   `-- test_public_contracts.py
+|   |-- domain
+|   |   |-- test_domain_helpers.py
+|   |   |-- test_expressions.py
+|   |   |-- test_lexeme_checks.py
+|   |   |-- test_morphology.py
+|   |   |-- test_morphology_dataset_contract.py
+|   |   |-- test_morphology_internals.py
+|   |   |-- test_normalization_more.py
+|   |   `-- test_text_processing.py
+|   |-- integrations
+|   |   |-- test_integrations_helpers.py
+|   |   `-- test_model_manager.py
+|   |-- scripts
+|   |   `-- test_lexeme_smoke_script.py
+|   |-- storage
+|   |   |-- test_audio_writer.py
+|   |   |-- test_morphology_repository.py
+|   |   |-- test_morphology_repository_helpers.py
+|   |   `-- test_pronunciation_repository.py
+|   |-- support
+|   |   `-- test_support_modules_more.py
+|   |-- ui
+|   |   |-- test_logging_runtime_ui.py
+|   |   `-- test_tkinter_ui_interactions.py
+|   `-- conftest.py
+|-- .coverage
+|-- .env
+|-- .env.example
+|-- .gitattributes
+|-- .gitignore
+|-- app.py
+|-- pyproject.toml
+|-- pytest.ini
+|-- README.md
+|-- requirements-dev.txt
+|-- requirements.txt
+|-- run.bat
+`-- TESTING.md

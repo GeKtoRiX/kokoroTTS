@@ -1,8 +1,9 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Restore a Git working tree directly from .git/objects without git executable.
 
 This is intentionally minimal and supports loose objects and packed refs are ignored.
 """
+
 from __future__ import annotations
 
 import argparse

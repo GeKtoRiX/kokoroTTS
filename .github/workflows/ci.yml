@@ -24,8 +24,20 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
+      - name: Ruff format check
+        run: ruff format --check .
+
       - name: Mypy
         run: mypy
+
+      - name: Bandit (medium+)
+        run: bandit -q -ll -r app.py kokoro_tts
+
+      - name: pip-audit
+        run: pip-audit -r requirements.txt
+
+      - name: Generate project map
+        run: python scripts/generate_project_map.py
 
       - name: Pytest
         env:

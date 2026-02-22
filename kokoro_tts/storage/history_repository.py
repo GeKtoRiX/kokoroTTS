@@ -1,4 +1,5 @@
 """Storage for managing saved audio history."""
+
 from __future__ import annotations
 
 from datetime import datetime
